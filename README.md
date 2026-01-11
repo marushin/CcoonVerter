@@ -1,3 +1,5 @@
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ## 🚀 CcooNverter v0.8.5 공식 출시
 
 강력하고 빠른 RAW 이미지 배치 컨버터, **CcooNverter**의 첫 번째 공식 버전을 공개합니다! 
