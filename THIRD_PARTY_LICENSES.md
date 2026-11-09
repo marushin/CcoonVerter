@@ -134,6 +134,7 @@ This software is based in part on the work of the Independent JPEG Group
 
 ### Fonts
 
-egui's built-in fonts are covered by the SIL Open Font License 1.1 (Noto Emoji,
-Hack) and the Ubuntu Font Licence 1.0 (Ubuntu Light). The licence texts are in
-the `epaint_default_fonts` crate.
+egui's built-in fonts carry their own licences: Noto Emoji (SIL Open Font
+License 1.1), Ubuntu Light (Ubuntu Font Licence 1.0), Hack (Hack licence), and
+the emoji icon font (MIT). The licence texts are in the `fonts` folder of the
+`epaint_default_fonts` crate.
