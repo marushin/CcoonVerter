@@ -193,6 +193,24 @@ fn brightness_and_levels_change_output() {
     assert!((crushed - normal).abs() > 5.0, "{crushed} vs {normal}");
 }
 
+/// Writes a 24 MP synthetic DNG to `$CCOON_FIXTURE_OUT` for manual CLI timing:
+/// `CCOON_FIXTURE_OUT=big.dng cargo test --test synthetic_dng -- --ignored write_large_fixture`
+#[test]
+#[ignore]
+fn write_large_fixture() {
+    let Some(out) = std::env::var_os("CCOON_FIXTURE_OUT") else {
+        eprintln!("CCOON_FIXTURE_OUT not set");
+        return;
+    };
+    let spec = DngSpec {
+        width: 6000,
+        height: 4000,
+        preview: Some((1616, 1080)),
+        ..Default::default()
+    };
+    std::fs::write(out, synthetic_dng(&spec)).unwrap();
+}
+
 /// Real camera files: put them in `<repo>/tests/samples/` (gitignored).
 /// Skips cleanly when the folder is missing or empty.
 #[test]
