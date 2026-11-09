@@ -212,6 +212,7 @@ dependencies = [
  "anyhow",
  "ccoonverter-core",
  "clap",
+ "image",
  "log",
  "serde",
  "serde_json",

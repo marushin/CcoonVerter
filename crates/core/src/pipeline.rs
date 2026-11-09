@@ -134,6 +134,16 @@ pub enum Method {
     Developed,
 }
 
+impl Method {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::EmbeddedCopy => "embedded_copy",
+            Method::EmbeddedReencoded => "embedded_reencoded",
+            Method::Developed => "developed",
+        }
+    }
+}
+
 /// Successful result of [`convert_one`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]

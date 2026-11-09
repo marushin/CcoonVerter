@@ -42,6 +42,9 @@ pub mod update;
 /// Working image type: RGB, f32 per channel, sRGB-encoded values in 0..1.
 pub type RgbF32Image = image::Rgb32FImage;
 
+/// Re-export of the pinned rawler version (used by the CLI `info` command).
+pub use rawler;
+
 pub use error::{ConvertError, Result};
 pub use job::{run_batch, BatchSummary, FileResult, FileStatus, Progress};
 pub use pipeline::{convert_one, plan_tasks, ConvertOutcome, FileTask, Method};
