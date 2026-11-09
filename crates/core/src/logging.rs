@@ -58,6 +58,24 @@ pub fn rotate_if_needed(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
     }
 }
 
+/// Dependency log targets limited to warnings: HTTP/TLS and the GUI stack
+/// (renderer adapter lists, windowing/event-loop chatter at every start).
+pub const QUIET_TARGETS: &[&str] = &[
+    "ureq",
+    "ureq_proto",
+    "rustls",
+    "wgpu_core",
+    "wgpu_hal",
+    "naga",
+    "egui_wgpu",
+    "eframe",
+    "egui_glow",
+    "glutin",
+    "winit",
+    "calloop",
+    "sctk",
+];
+
 /// Install the global logger. Safe to call once; a second call returns an error.
 pub fn init(opts: &LogOptions) -> Result<(), String> {
     let main = opts.level.max(opts.stderr_level);
@@ -68,12 +86,12 @@ pub fn init(opts: &LogOptions) -> Result<(), String> {
     } else {
         LevelFilter::Error
     };
-    let base = fern::Dispatch::new()
+    let mut base = fern::Dispatch::new()
         .level(main)
-        .level_for("rawler", rawler_level)
-        .level_for("ureq", LevelFilter::Warn)
-        .level_for("ureq_proto", LevelFilter::Warn)
-        .level_for("rustls", LevelFilter::Warn);
+        .level_for("rawler", rawler_level);
+    for target in QUIET_TARGETS {
+        base = base.level_for(*target, LevelFilter::Warn);
+    }
 
     let stderr = fern::Dispatch::new()
         .level(opts.stderr_level)

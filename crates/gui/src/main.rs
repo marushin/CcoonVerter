@@ -12,6 +12,7 @@ mod controller;
 mod dialogs;
 mod fonts;
 mod theme;
+mod titlebar;
 mod widgets;
 
 use std::sync::Arc;
@@ -44,6 +45,12 @@ fn load_icon() -> Option<egui::IconData> {
     }
 }
 
+/// Shown when the window cannot be created; points to the other renderer.
+#[cfg(not(feature = "wgpu"))]
+const RENDERER_HINT: &str = "This build draws with OpenGL 2.0+. Update the graphics driver, or (old GPU, remote desktop or VM) try a build with the wgpu renderer (`cargo build --release -p ccoonverter --features wgpu`).";
+#[cfg(feature = "wgpu")]
+const RENDERER_HINT: &str = "This build draws with wgpu (DirectX 12 / Vulkan / Metal). If no adapter is available (old GPU, remote desktop or VM), use the default OpenGL (glow) build.";
+
 fn window_title() -> String {
     format!("{} v{}", config::APP_NAME, env!("CARGO_PKG_VERSION"))
 }
@@ -72,13 +79,17 @@ fn main() -> eframe::Result {
         viewport = viewport.with_icon(Arc::new(icon));
     }
 
-    #[allow(unused_mut)]
     let mut options = eframe::NativeOptions {
         viewport,
         centered: true,
         ..Default::default()
     };
-    #[cfg(feature = "glow")]
+    // Default build: OpenGL (glow) only. `--features wgpu` switches to wgpu.
+    #[cfg(feature = "wgpu")]
+    {
+        options.renderer = eframe::Renderer::Wgpu;
+    }
+    #[cfg(not(feature = "wgpu"))]
     {
         options.renderer = eframe::Renderer::Glow;
     }
@@ -98,7 +109,8 @@ fn main() -> eframe::Result {
             .set_level(rfd::MessageLevel::Error)
             .set_title(config::APP_NAME)
             .set_description(format!(
-                "Could not open the application window:\n{e}\n\nIf this persists (old GPU, remote desktop or VM), use a build with the `glow` renderer."
+                "Could not open the application window:\n{e}\n\n{}",
+                RENDERER_HINT
             ))
             .show();
     }

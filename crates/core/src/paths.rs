@@ -2,9 +2,9 @@
 //!
 //! Python 0.8.x wrote everything into the current working directory. 0.9.0
 //! uses the OS standard directories via `directories::ProjectDirs`
-//! (`%APPDATA%\ccoon\CcooNverter\...` on Windows,
-//! `~/Library/Application Support/com.ccoon.CcooNverter` on macOS) and imports
-//! the legacy files once.
+//! (`%APPDATA%\ccoon\CcooNverter\config` + `%LOCALAPPDATA%\ccoon\CcooNverter\...`
+//! on Windows, `~/Library/Application Support/ccoon.CcooNverter` on macOS) and
+//! imports the legacy files from the executable's folder once.
 //!
 //! Setting the environment variable `CCOONVERTER_HOME` puts every file under
 //! that directory instead (portable mode / tests).
@@ -73,19 +73,13 @@ impl AppPaths {
     }
 
     /// Import legacy Python files (`converter_settings.json`, `presets.json`)
-    /// from next to the executable or the current directory, but only when the
-    /// corresponding new file does not exist yet. Returns the imported files.
+    /// from the executable's directory (where the Python exe kept them when
+    /// double-clicked), but only when the corresponding new file does not
+    /// exist yet. The current working directory is deliberately **not**
+    /// searched: a shell started in some unrelated folder must not import its
+    /// JSON files. Returns the imported files.
     pub fn migrate_legacy(&self) -> Vec<PathBuf> {
-        let mut dirs = Vec::new();
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(d) = exe.parent() {
-                dirs.push(d.to_path_buf());
-            }
-        }
-        if let Ok(cwd) = std::env::current_dir() {
-            dirs.push(cwd);
-        }
-        self.migrate_legacy_from(&dirs)
+        self.migrate_legacy_from(&exe_dir().into_iter().collect::<Vec<_>>())
     }
 
     /// Same as [`migrate_legacy`](Self::migrate_legacy) with explicit search directories.
@@ -138,6 +132,13 @@ impl AppPaths {
         }
         imported
     }
+}
+
+/// Directory containing the running executable.
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
 fn find_first(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
@@ -209,6 +210,27 @@ mod tests {
             .is_empty());
         let s = crate::settings::AppSettings::load(&paths.settings_file());
         assert_eq!(s.convert.quality, 77);
+    }
+
+    #[test]
+    fn migrate_legacy_ignores_current_dir() {
+        // Legacy files in the CWD must not be picked up; only the exe folder
+        // (the test binary's `target/.../deps`, which has none) is searched.
+        let cwd = std::env::current_dir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_root(home.path().to_path_buf());
+        let imported = paths.migrate_legacy();
+        assert!(
+            imported.iter().all(|p| p.parent() != Some(cwd.as_path())),
+            "imported from CWD: {imported:?}"
+        );
+        assert_eq!(
+            exe_dir(),
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .map(Path::to_path_buf)
+        );
     }
 
     #[test]

@@ -982,8 +982,10 @@ impl eframe::App for CcooNverterApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if !self.title_bar_themed {
-            // Dark native title bar through winit (no direct DWM calls).
+            // Dark native title bar: winit theme (macOS/Linux) plus a
+            // best-effort DWM call on Windows (see `titlebar`).
             ctx.send_viewport_cmd(ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+            crate::titlebar::apply(frame);
             self.title_bar_themed = true;
         }
         self.poll_job(&ctx, frame);
@@ -1021,13 +1023,9 @@ impl eframe::App for CcooNverterApp {
         BG.to_normalized_gamma_f32()
     }
 
-    #[cfg(feature = "glow")]
+    // eframe always compiles the glow backend here, so the trait method has
+    // the `gl` parameter in every build.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.shutdown();
-    }
-
-    #[cfg(not(feature = "glow"))]
-    fn on_exit(&mut self) {
         self.shutdown();
     }
 }

@@ -712,8 +712,11 @@ dependencies = [
  "image",
  "log",
  "open",
+ "raw-window-handle",
  "rfd",
  "tempfile",
+ "windows-sys 0.61.2",
+ "winit",
  "winresource",
 ]
 

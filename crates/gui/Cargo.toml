@@ -15,17 +15,24 @@ path = "src/main.rs"
 
 [features]
 default = []
-# Use the OpenGL (glow) renderer instead of the default wgpu renderer
-# (old GPUs, remote desktop sessions, VMs without a usable wgpu adapter).
-glow = ["eframe/glow"]
+# Render with wgpu (DirectX 12 / Vulkan / Metal) instead of the default
+# OpenGL (glow) renderer. Adds about 10 MB to the executable.
+wgpu = ["eframe/wgpu"]
 
 [dependencies]
 ccoonverter-core.workspace = true
 eframe.workspace = true
+# Only to enable winit's default features (see workspace Cargo.toml).
+winit.workspace = true
 rfd.workspace = true
 open.workspace = true
 image.workspace = true
 log.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Dark title bar via DwmSetWindowAttribute (see src/titlebar.rs).
+raw-window-handle.workspace = true
+windows-sys.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
