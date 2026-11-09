@@ -715,13 +715,13 @@ impl CcooNverterApp {
                 widgets::header(ui, "EXIF PRESERVATION");
             });
             widgets::checkbox(ui, &mut s.preserve_exif, "", theme::font_body_bold());
+            let note_color = if s.preserve_exif { TEXT } else { TEXT_DIM };
+            ui.label(
+                RichText::new("Not all metadata may be copied identically")
+                    .font(theme::font_small())
+                    .color(note_color),
+            );
         });
-        let note_color = if s.preserve_exif { TEXT } else { TEXT_DIM };
-        ui.label(
-            RichText::new("Not all metadata may be copied identically")
-                .font(theme::font_small())
-                .color(note_color),
-        );
 
         // Resize.
         cols.row(

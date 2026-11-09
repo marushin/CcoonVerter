@@ -225,7 +225,7 @@ impl Columns {
     pub const SETTINGS: Columns = Columns {
         label: 170.0,
         value: 64.0,
-        row_height: 26.0,
+        row_height: 25.0,
     };
 
     /// One grid row: `label` cell, an expanding control cell (receives its
