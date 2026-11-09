@@ -21,7 +21,7 @@ use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
 use crate::error::{ConvertError, FailureKind};
 use crate::pipeline::{convert_one, ConvertOutcome, FileTask, Method};
-use crate::settings::{ConvertSettings, OutputFormat};
+use crate::settings::ConvertSettings;
 
 /// Final state of one file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -105,11 +105,10 @@ fn cores() -> usize {
         .unwrap_or(4)
 }
 
-/// Peak memory per pixel while developing, measured on real files
-/// (`docs/V0.12_REPORT.md`): raw sensor data, demosaic and linear buffers.
-pub const DEVELOP_BYTES_PER_PIXEL: u64 = 44;
-/// Extra per pixel for a full-size 16-bit TIFF (sample and file buffers).
-const TIFF_BYTES_PER_PIXEL: u64 = 12;
+/// Peak memory per pixel while developing: measured 29 to 31 bytes on files
+/// of 8 to 28 MP (`docs/V0.12_REPORT.md`). The peak is during demosaicing,
+/// so the output format does not change it.
+pub const DEVELOP_BYTES_PER_PIXEL: u64 = 32;
 /// Peak unrelated to the image size (metering preview, decoder state).
 const FIXED_BYTES_PER_FILE: u64 = 64 * 1024 * 1024;
 /// Share of the available memory a batch may plan to use.
@@ -119,15 +118,9 @@ const SIZE_SAMPLES: usize = 3;
 
 /// Peak bytes to expect while converting one image of `pixels` read from a
 /// file of `file_bytes` (memory-mapped, so it counts).
-pub fn estimate_file_memory(pixels: u64, file_bytes: u64, full_size_tiff: bool) -> u64 {
-    let per_pixel = DEVELOP_BYTES_PER_PIXEL
-        + if full_size_tiff {
-            TIFF_BYTES_PER_PIXEL
-        } else {
-            0
-        };
+pub fn estimate_file_memory(pixels: u64, file_bytes: u64) -> u64 {
     pixels
-        .saturating_mul(per_pixel)
+        .saturating_mul(DEVELOP_BYTES_PER_PIXEL)
         .saturating_add(file_bytes)
         .saturating_add(FIXED_BYTES_PER_FILE)
 }
@@ -228,8 +221,7 @@ pub fn plan_threads(tasks: &[FileTask], settings: &ConvertSettings) -> ThreadPla
         };
     }
     let (largest_pixels, file_bytes) = largest_image(tasks);
-    let full_tiff = settings.effective_format() == OutputFormat::Tiff16 && settings.resize == 0;
-    let per_file_bytes = estimate_file_memory(largest_pixels, file_bytes, full_tiff);
+    let per_file_bytes = estimate_file_memory(largest_pixels, file_bytes);
     let available_bytes = available_memory();
     let threads = match available_bytes {
         Some(avail) => memory_threads(cores, avail, per_file_bytes),
@@ -541,28 +533,24 @@ mod tests {
     fn thread_count_follows_memory_and_cores() {
         const GB: u64 = 1024 * 1024 * 1024;
         // 24 MP file, 25 MB on disk.
-        let per = estimate_file_memory(24_000_000, 25_000_000, false);
+        let per = estimate_file_memory(24_000_000, 25_000_000);
         assert_eq!(
             per,
             24_000_000 * DEVELOP_BYTES_PER_PIXEL + 25_000_000 + FIXED_BYTES_PER_FILE
         );
         // Plenty of RAM: limited by the cores, not the old cap of 4.
         assert_eq!(memory_threads(16, 64 * GB, per), 16);
-        // 8 GB free, about 1.15 GB per file: 75 % fits 5.
-        assert_eq!(memory_threads(16, 8 * GB, per), 5);
+        // 8 GB free, about 0.8 GB per file: 75 % fits 7.
+        assert_eq!(memory_threads(16, 8 * GB, per), 7);
         // Short on memory: one file at a time, never zero.
         assert_eq!(memory_threads(16, GB / 2, per), 1);
         assert_eq!(memory_threads(16, 0, per), 1);
         // A bigger image means fewer threads.
-        let big = estimate_file_memory(100_000_000, 100_000_000, false);
+        let big = estimate_file_memory(100_000_000, 100_000_000);
         assert!(memory_threads(32, 32 * GB, big) < memory_threads(32, 32 * GB, per));
-        // A full-size 16-bit TIFF needs more than a JPEG of the same image.
-        assert!(
-            estimate_file_memory(24_000_000, 0, true) > estimate_file_memory(24_000_000, 0, false)
-        );
         // Degenerate input cannot divide by zero or overflow.
         assert_eq!(memory_threads(4, u64::MAX, 0), 4);
-        assert_eq!(estimate_file_memory(u64::MAX, u64::MAX, true), u64::MAX);
+        assert_eq!(estimate_file_memory(u64::MAX, u64::MAX), u64::MAX);
     }
 
     #[test]

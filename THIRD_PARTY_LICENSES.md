@@ -29,6 +29,8 @@ relinking requirement of LGPL-2.1 §6(a). rawler is used unmodified.
 |---|---|---|---|
 | image | 0.25.10 | MIT OR Apache-2.0 | https://github.com/image-rs/image |
 | jpeg-encoder | 0.7.1 | (MIT OR Apache-2.0) AND IJG | https://github.com/vstroebel/jpeg-encoder |
+| png | 0.18.1 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png |
+| sysinfo | 0.37.2 | MIT | https://github.com/GuillaumeGomez/sysinfo |
 | img-parts | 0.4.2 | MIT OR Apache-2.0 | https://github.com/paolobarbolini/img-parts |
 | kamadak-exif | 0.6.2 | BSD-2-Clause | https://github.com/kamadak/exif-rs |
 | rayon | 1.12.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon |
@@ -67,6 +69,7 @@ or additional terms:
 | epaint_default_fonts 0.37.0 | (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0 | egui's built-in fonts (Ubuntu Light, Noto Emoji, Hack) |
 | option-ext 0.2.0 | MPL-2.0 | used by `dirs-sys` (via `directories`); unmodified |
 | ring 0.17.14 | Apache-2.0 AND ISC | TLS crypto for the update check (`rustls`) |
+| libwebp-sys 0.14.4 | MIT, bundles libwebp (BSD-3-Clause, Google) | C library compiled into the binaries; lossy WebP encoding |
 | rustls 0.23.46 | Apache-2.0 OR ISC OR MIT | TLS for the update check |
 | webpki-roots 1.0.11 | CDLA-Permissive-2.0 | Mozilla root certificates |
 | clipboard-win, error-code | BSL-1.0 | Windows clipboard |

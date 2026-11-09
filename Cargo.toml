@@ -17,8 +17,8 @@ rayon = "1.12.0"
 img-parts = "0.4.2"
 jpeg-encoder = "0.7.1"
 png = "0.18.1"
-# Lossy WebP: safe wrapper over libwebp (C, compiled by libwebp-sys through cc).
-webp = { version = "0.3.1", default-features = false }
+# Lossy WebP: libwebp (C, compiled by the crate through cc).
+libwebp-sys = "0.14.4"
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 kamadak-exif = "0.6.2"
 ureq = { version = "3.5.1", features = ["json"] }

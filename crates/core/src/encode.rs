@@ -23,7 +23,7 @@
 //! TIFF stores the tags in its own directories, so a camera MakerNote cannot
 //! come along: its internal offsets do not survive the move.
 //!
-//! WebP is lossy, through libwebp (the `webp` crate). The `image` crate only
+//! WebP is lossy, through libwebp (`libwebp-sys`). The `image` crate only
 //! writes lossless WebP, which is of little use for photographs.
 
 use std::io::Cursor;
@@ -197,9 +197,27 @@ pub fn encode_webp(img: &RgbImage, quality: u8, meta: &OutputMeta) -> Result<Vec
             "image size {w}x{h} cannot be stored as WebP (limit {MAX_WEBP_DIM} pixels per side)"
         )));
     }
-    let encoded = webp::Encoder::from_rgb(img.as_raw(), w, h)
-        .encode_simple(false, f32::from(quality.clamp(1, 100)))
-        .map_err(|e| ConvertError::Encode(format!("libwebp: {e:?}")))?;
+    let mut output: *mut u8 = std::ptr::null_mut();
+    // Safety: the buffer is a tightly packed RGB image of `w` x `h` (from an
+    // `RgbImage`); libwebp allocates `output`, freed right after the copy.
+    let encoded = unsafe {
+        let len = libwebp_sys::WebPEncodeRGB(
+            img.as_raw().as_ptr(),
+            w as i32,
+            h as i32,
+            w as i32 * 3,
+            f32::from(quality.clamp(1, 100)),
+            &mut output,
+        );
+        if len == 0 || output.is_null() {
+            return Err(ConvertError::Encode(
+                "libwebp could not encode the image".into(),
+            ));
+        }
+        let bytes = std::slice::from_raw_parts(output, len).to_vec();
+        libwebp_sys::WebPFree(output.cast());
+        bytes
+    };
     mux_webp(&encoded, w, h, meta)
 }
 
