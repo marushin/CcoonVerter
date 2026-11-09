@@ -1,0 +1,32 @@
+[package]
+name = "ccoonverter-core"
+description = "Conversion engine for CcooNverter (RAW to JPEG batch converter)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "ccoonverter_core"
+
+[dependencies]
+rawler.workspace = true
+image.workspace = true
+rayon.workspace = true
+img-parts.workspace = true
+jpeg-encoder.workspace = true
+kamadak-exif.workspace = true
+ureq.workspace = true
+directories.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+fern.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

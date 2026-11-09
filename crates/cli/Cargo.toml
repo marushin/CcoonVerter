@@ -1,0 +1,24 @@
+[package]
+name = "ccoonverter-cli"
+description = "Command line interface for CcooNverter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "ccoonverter-cli"
+path = "src/main.rs"
+
+[dependencies]
+ccoonverter-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
