@@ -2,6 +2,37 @@
 
 이 파일의 `## vX.Y.Z - 날짜` 절은 GitHub 릴리스 본문으로 그대로 사용됩니다(`.github/workflows/release.yml`).
 
+## v0.11.0 - 2026-11-09
+
+**Five more RAW formats, a real-sample regression matrix, automatic exposure that follows the camera, GPS/lens/rating metadata, and a full Korean/English UI.**
+
+### 새 기능
+
+1. **RAW 포맷 추가**: RAF(Fujifilm), ORF(Olympus/OM System), RW2(Panasonic), PEF(Pentax), SRW(Samsung)를 지원합니다. 폴더 스캔과 드래그 앤 드롭에 모두 적용되고, 실제 파일로 디코드가 확인된 포맷만 추가했습니다.
+2. **자동 노출 개선**: 파일 안에 카메라 JPEG이 있으면 그 평균 밝기에 맞춰 시작 노출을 잡습니다. JPEG이 없는 파일은 장면 밝기(key)와 상위 1% 지점을 함께 쓰는 모델로 계산합니다. 미리보기와 일괄 변환은 같은 계산을 공유합니다.
+3. **메타데이터 복사 확대**: EXIF 보존을 켜면 GPS, 렌즈 모델/사양, 시리얼, XMP 별점(원본에 있을 때)을 결과 JPG에 기록합니다. 임베디드 JPEG 경로에서 정보가 빠져 있으면 RAW 쪽 값으로 채웁니다.
+4. **원본 파일 날짜 유지**: 결과 JPG의 수정 시각을 RAW 파일과 같게 맞추는 옵션(기본 꺼짐)을 EXIF 줄에 추가했습니다. 명령줄 옵션은 `--keep-date`입니다.
+5. **한국어/영어 UI**: 모든 화면 문구, 네이티브 대화상자, 툴팁을 한 곳에서 관리합니다. 시스템 언어를 자동으로 따르고, 창 하단에서 직접 바꿀 수 있으며 설정에 저장됩니다.
+6. **툴팁**: 모든 설정에 짧은 설명을 추가했습니다.
+7. **샘플 회귀 매트릭스**: raw.pixls.us CC0 샘플 34장으로 디코드, 현상, 임베디드 추출을 검증합니다. `cargo test --release -p ccoonverter-core --test regression_matrix regression_matrix -- --ignored --nocapture --test-threads=1`로 실행하며, CI에서는 주 1회와 태그 푸시 때 돌아갑니다(`tests/regression/README.md`).
+
+### 수정
+
+- **세로 사진 회전 버그 수정**: rawler 0.8.0은 DNG 외의 파일에 RAW의 방향 정보를 주지 않습니다. v0.10.0까지 세로로 찍은 비 DNG 파일(예: 세로로 찍은 NEF)의 현상 결과가 눕혀서 나왔는데, 이제 메타데이터의 방향을 사용합니다.
+
+### 변경된 동작
+
+- 기본 노출이 카메라 JPEG에 맞춰지면서 v0.10.0과 결과 밝기가 달라질 수 있습니다. 카메라 JPEG이 아니라 v0.10.0 방식(상위 1%)의 결과가 필요하면 EV 슬라이더로 조정하세요.
+- EXIF 줄의 "Not all metadata may be copied identically" 안내는 툴팁으로 옮겼습니다. 하단에 언어 선택이 들어가면서 설정 행 높이를 25pt에서 24pt로 줄였습니다.
+
+### 알려진 제한
+
+- **Nikon High Efficiency / High Efficiency\* (TicoRAW) NEF**(Z6III, Z f 등)와 **Sony A7 V (ILCE-7M5)**는 rawler 0.8.0이 디코드하지 못합니다. 이런 파일은 깨끗한 오류 메시지와 함께 실패로 기록되며, 임베디드 JPEG 추출은 동작합니다.
+- X-Trans(Fujifilm) 파일은 rawler의 바이리니어 디모자이크로 현상합니다.
+- rawler는 별점(rating)을 제공하지 않으므로 파일 안의 `xmp:Rating` 패킷을 찾아 씁니다. 메이커노트에만 별점을 저장하는 카메라는 복사되지 않습니다. 메이커노트 전체는 EXIF를 병합하는 경우 옮기지 않습니다.
+- 임베디드 JPEG을 기준으로 삼는 것은 카메라 JPEG 자체의 밝기에 맞추는 것이므로, 카메라 스타일이 아주 극단적인 경우 결과도 그 밝기를 따릅니다. 범위는 장면 모델 기준 ±1.25 EV로 제한합니다.
+- macOS 실행과 wgpu 렌더러는 이번 버전에서 직접 실행 확인하지 못했습니다(wgpu는 clippy만 확인).
+
 ## v0.10.0 - 2026-11-09
 
 **See the result before converting: live preview with camera-JPEG comparison, filmic tone curve and EV exposure, drag and drop.**
