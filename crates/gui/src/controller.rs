@@ -37,6 +37,10 @@ pub struct UiSettings {
     pub extract_embedded: bool,
     pub preserve_exif: bool,
     pub on_conflict: ConflictPolicy,
+    pub exposure_ev: f32,
+    pub tone_curve: bool,
+    /// Output sharpening (no slider in the UI; kept in presets and settings).
+    pub sharpen: f32,
 }
 
 impl Default for UiSettings {
@@ -90,6 +94,9 @@ impl UiSettings {
             extract_embedded: s.extract_embedded,
             preserve_exif: s.preserve_exif,
             on_conflict: s.on_conflict,
+            exposure_ev: s.exposure_ev,
+            tone_curve: s.tone_curve,
+            sharpen: s.sharpen,
         }
     }
 
@@ -124,6 +131,11 @@ impl UiSettings {
             extract_embedded: self.extract_embedded,
             preserve_exif: self.preserve_exif,
             on_conflict: self.on_conflict,
+            exposure_ev: self
+                .exposure_ev
+                .clamp(config::MIN_EXPOSURE_EV, config::MAX_EXPOSURE_EV),
+            tone_curve: self.tone_curve,
+            sharpen: self.sharpen.clamp(config::MIN_SHARPEN, config::MAX_SHARPEN),
         }
     }
 
@@ -137,6 +149,9 @@ impl UiSettings {
         self.rgb = d.rgb();
         self.black_point = f32::from(d.black_point);
         self.white_point = f32::from(d.white_point);
+        self.exposure_ev = d.exposure_ev;
+        self.tone_curve = d.tone_curve;
+        self.sharpen = d.sharpen;
     }
 
     /// Apply a preset like Python `_apply_settings_to_ui`: every saved value is
@@ -239,6 +254,106 @@ pub fn prepare_batch(source_text: &str, output_text: &str) -> Result<PreparedBat
     }
     log::info!("Found {} RAW files to convert", tasks.len());
     Ok(PreparedBatch { output_dir, tasks })
+}
+
+/// Files staged by a drop: converted instead of scanning the source folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropSelection {
+    /// Common parent of the files; acts as the source root.
+    pub root: PathBuf,
+    pub files: Vec<PathBuf>,
+}
+
+/// Build a batch from dropped files. Same output rule as a folder batch:
+/// the custom output folder if it exists, else `<root>/Converted_JPG`,
+/// with sub-folders below `root` preserved.
+pub fn prepare_selection(selection: &DropSelection, output_text: &str) -> PreparedBatch {
+    let output_dir = resolve_output_folder(&selection.root, output_text);
+    let tasks = ccoonverter_core::plan_tasks(&selection.files, &selection.root, &output_dir);
+    PreparedBatch { output_dir, tasks }
+}
+
+/// Deepest folder that contains every path, by path components.
+/// `None` when they share nothing (different drives).
+pub fn common_parent(files: &[PathBuf]) -> Option<PathBuf> {
+    let mut iter = files.iter().filter_map(|f| f.parent());
+    let first = iter.next()?;
+    let mut common: Vec<_> = first.components().collect();
+    for parent in iter {
+        let n = common
+            .iter()
+            .zip(parent.components())
+            .take_while(|(a, b)| **a == *b)
+            .count();
+        common.truncate(n);
+    }
+    if common.is_empty() {
+        None
+    } else {
+        Some(common.iter().map(|c| c.as_os_str()).collect())
+    }
+}
+
+/// What a drop onto the window should do. `notice` is a short message for
+/// the user (ignored files, or why nothing happened).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DropPlan {
+    /// A folder was dropped: it becomes the source folder.
+    SetSource {
+        folder: PathBuf,
+        notice: Option<String>,
+    },
+    /// RAW files were dropped: stage exactly these for the next conversion.
+    Files {
+        selection: DropSelection,
+        notice: Option<String>,
+    },
+    /// Nothing usable was dropped.
+    Ignored { notice: String },
+}
+
+/// Classify dropped paths. `is_dir` is a parameter so tests need no files.
+pub fn plan_drop(paths: &[PathBuf], is_dir: impl Fn(&Path) -> bool) -> DropPlan {
+    let (dirs, files): (Vec<&PathBuf>, Vec<&PathBuf>) = paths.iter().partition(|p| is_dir(p));
+    if let Some(folder) = dirs.first() {
+        let ignored = dirs.len() - 1 + files.len();
+        let notice = (ignored > 0).then(|| {
+            format!(
+                "Using folder {}; ignored {ignored} other dropped item(s).",
+                folder.display()
+            )
+        });
+        return DropPlan::SetSource {
+            folder: (*folder).clone(),
+            notice,
+        };
+    }
+    let mut raws: Vec<PathBuf> = files
+        .iter()
+        .filter(|p| ccoonverter_core::scan::is_raw_file(p))
+        .map(|p| (*p).clone())
+        .collect();
+    let ignored = files.len() - raws.len();
+    if raws.is_empty() {
+        return DropPlan::Ignored {
+            notice: format!(
+                "No RAW files in the drop ({ignored} file(s) ignored). Supported: {}.",
+                config::SUPPORTED_EXTENSIONS.join(", ")
+            ),
+        };
+    }
+    raws.sort();
+    raws.dedup();
+    let Some(root) = common_parent(&raws) else {
+        return DropPlan::Ignored {
+            notice: "Dropped files must be on the same drive.".into(),
+        };
+    };
+    let notice = (ignored > 0).then(|| format!("Ignored {ignored} non-RAW file(s)."));
+    DropPlan::Files {
+        selection: DropSelection { root, files: raws },
+        notice,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +655,9 @@ mod tests {
             extract_embedded: true,
             preserve_exif: true,
             on_conflict: ConflictPolicy::Skip,
+            exposure_ev: -1.25,
+            tone_curve: false,
+            sharpen: 0.8,
         };
         let ui = UiSettings::from_convert(&core);
         assert_eq!(ui.resize_text, "2000");
@@ -592,8 +710,14 @@ mod tests {
             preserve_exif: true,
             extract_embedded: true,
             on_conflict: ConflictPolicy::Overwrite,
+            exposure_ev: 2.0,
+            tone_curve: false,
+            sharpen: 0.0,
         };
         ui.reset_raw_adjustments();
+        assert_eq!(ui.exposure_ev, 0.0);
+        assert!(ui.tone_curve);
+        assert_eq!(ui.sharpen, config::DEFAULT_SHARPEN);
         assert_eq!(ui.brightness, 1.0);
         assert_eq!(ui.style, PictureStyle::Standard);
         assert_eq!(ui.white_balance, WhiteBalance::CameraDefault);
@@ -621,6 +745,133 @@ mod tests {
         assert_eq!(ui.style, PictureStyle::Vivid);
         assert_eq!(ui.quality, 60.0);
         assert_eq!(ui.on_conflict, ConflictPolicy::Skip);
+    }
+
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn dropping_a_folder_sets_the_source() {
+        let paths = vec![p("D:/a/photos")];
+        let plan = plan_drop(&paths, |_| true);
+        assert_eq!(
+            plan,
+            DropPlan::SetSource {
+                folder: p("D:/a/photos"),
+                notice: None
+            }
+        );
+    }
+
+    #[test]
+    fn folder_wins_over_files_with_a_notice() {
+        let paths = vec![p("D:/a/one.jpg"), p("D:/a/photos"), p("D:/a/two")];
+        let plan = plan_drop(&paths, |q| q.extension().is_none());
+        match plan {
+            DropPlan::SetSource { folder, notice } => {
+                assert_eq!(folder, p("D:/a/photos"));
+                assert!(notice.unwrap().contains("2 other"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn dropping_files_selects_only_raw_files() {
+        let paths = vec![
+            p("D:/shoot/b.CR3"),
+            p("D:/shoot/sub/a.nef"),
+            p("D:/shoot/readme.txt"),
+            p("D:/shoot/IMG.JPG"),
+        ];
+        match plan_drop(&paths, |_| false) {
+            DropPlan::Files { selection, notice } => {
+                assert_eq!(selection.root, p("D:/shoot"));
+                assert_eq!(
+                    selection.files,
+                    vec![p("D:/shoot/b.CR3"), p("D:/shoot/sub/a.nef")]
+                );
+                assert_eq!(notice.as_deref(), Some("Ignored 2 non-RAW file(s)."));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_non_raw_files_are_ignored_with_a_message() {
+        let paths = vec![p("D:/x/a.jpg"), p("D:/x/b.txt")];
+        match plan_drop(&paths, |_| false) {
+            DropPlan::Ignored { notice } => {
+                assert!(notice.contains("No RAW files"), "{notice}");
+                assert!(notice.contains('2'), "{notice}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn common_parent_cases() {
+        assert_eq!(
+            common_parent(&[p("D:/a/b/x.dng"), p("D:/a/b/y.dng")]),
+            Some(p("D:/a/b"))
+        );
+        assert_eq!(
+            common_parent(&[p("D:/a/b/x.dng"), p("D:/a/c/y.dng")]),
+            Some(p("D:/a"))
+        );
+        assert_eq!(common_parent(&[p("a.dng"), p("b.dng")]), None);
+        assert_eq!(common_parent(&[]), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn files_on_different_drives_are_rejected() {
+        let paths = vec![p(r"C:\a\x.dng"), p(r"D:\a\y.dng")];
+        assert!(matches!(
+            plan_drop(&paths, |_| false),
+            DropPlan::Ignored { .. }
+        ));
+    }
+
+    #[test]
+    fn dropped_files_use_the_normal_output_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("촬영");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let dng = synthetic_dng(&DngSpec::default());
+        let a = root.join("a.DNG");
+        let b = root.join("sub").join("b.DNG");
+        std::fs::write(&a, &dng).unwrap();
+        std::fs::write(&b, &dng).unwrap();
+        // A third RAW in the folder that was not dropped must stay untouched.
+        std::fs::write(root.join("not_dropped.DNG"), &dng).unwrap();
+
+        let DropPlan::Files { selection, .. } =
+            plan_drop(&[a.clone(), b.clone()], |q: &Path| q.is_dir())
+        else {
+            panic!("expected files");
+        };
+        let batch = prepare_selection(&selection, "");
+        assert_eq!(batch.output_dir, root.join("Converted_JPG"));
+        assert_eq!(batch.tasks.len(), 2);
+        let BatchOutcome::Finished(s) =
+            RunningBatch::spawn(batch.clone(), ConvertSettings::default(), Some(1))
+                .unwrap()
+                .wait()
+        else {
+            panic!("batch errored");
+        };
+        assert_eq!(s.converted, 2);
+        assert!(batch.output_dir.join("a.jpg").exists());
+        assert!(batch.output_dir.join("sub").join("b.jpg").exists());
+        assert!(!batch.output_dir.join("not_dropped.jpg").exists());
+
+        // Custom output folder that exists is honoured, same as a folder batch.
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let batch = prepare_selection(&selection, &out.to_string_lossy());
+        assert_eq!(batch.output_dir, out);
     }
 
     #[test]

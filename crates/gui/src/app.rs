@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ccoonverter_core::config;
 use ccoonverter_core::paths::AppPaths;
@@ -10,21 +10,33 @@ use ccoonverter_core::presets::PresetStore;
 use ccoonverter_core::update::{self, ReleaseInfo};
 use ccoonverter_core::{AppSettings, PictureStyle, WhiteBalance};
 use eframe::egui::{
-    self, vec2, Align, Color32, ComboBox, Frame, Id, Key, Label, Layout, Margin, RichText,
-    ScrollArea, Stroke, Ui, ViewportCommand,
+    self, vec2, Align, Align2, Color32, ComboBox, Frame, Id, Key, Label, LayerId, Layout, Margin,
+    Order, RichText, ScrollArea, Stroke, StrokeKind, Ui, ViewportCommand,
 };
 
 use crate::controller::{
-    self, completion_message, conflict_label, prepare_batch, BatchOutcome, ProgressView,
-    RunningBatch, UiSettings, CONFLICT_CHOICES,
+    self, completion_message, conflict_label, plan_drop, prepare_batch, prepare_selection,
+    BatchOutcome, DropPlan, DropSelection, ProgressView, RunningBatch, UiSettings,
+    CONFLICT_CHOICES,
 };
 use crate::dialogs;
+use crate::preview::PreviewWorker;
+use crate::preview_panel::PreviewPanel;
 use crate::theme::{
     self, ACCENT, BG, BORDER, DANGER, PAD_LARGE, PAD_MEDIUM, PANEL, TEXT, TEXT_DIM,
 };
 use crate::widgets::{self, Columns};
 
 const SELECT_PRESET: &str = "Select Preset...";
+
+/// From this window width on, settings and preview sit side by side.
+const WIDE_LAYOUT_WIDTH: f32 = 1040.0;
+/// Width of the settings column in the wide layout.
+const SETTINGS_COLUMN: f32 = 600.0;
+/// Height of the image area when the preview is expanded in the narrow layout.
+const NARROW_PREVIEW_HEIGHT: f32 = 290.0;
+/// How long a drop notice stays visible.
+const NOTICE_TIME: Duration = Duration::from_secs(6);
 
 /// Deferred UI actions, executed after the frame's widgets are laid out
 /// (native dialogs block, so they never run in the middle of drawing).
@@ -66,10 +78,28 @@ pub struct CcooNverterApp {
     saved_on_exit: bool,
     /// Dark native title bar requested (sent on the first frame, once the window exists).
     title_bar_themed: bool,
+
+    preview: PreviewPanel,
+    /// Files staged by a drop: converted instead of scanning the source folder.
+    selection: Option<DropSelection>,
+    /// Transient message after a drop.
+    notice: Option<(String, Instant)>,
 }
 
 impl CcooNverterApp {
-    pub fn new(paths: AppPaths, app_settings: AppSettings, presets: PresetStore) -> Self {
+    pub fn new(
+        ctx: egui::Context,
+        paths: AppPaths,
+        app_settings: AppSettings,
+        presets: PresetStore,
+    ) -> Self {
+        let worker = match PreviewWorker::spawn(Box::new(move || ctx.request_repaint())) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                log::warn!("Preview disabled, could not start its worker: {e}");
+                None
+            }
+        };
         let source = app_settings
             .last_source
             .as_ref()
@@ -104,6 +134,9 @@ impl CcooNverterApp {
             close_confirmed: false,
             saved_on_exit: false,
             title_bar_themed: false,
+            preview: PreviewPanel::new(worker, app_settings.preview_open),
+            selection: None,
+            notice: None,
             paths,
         }
     }
@@ -122,6 +155,7 @@ impl CcooNverterApp {
             output_folder: non_empty(&self.output),
             last_source: non_empty(&self.source),
             check_updates: self.check_updates,
+            preview_open: self.preview.open,
         }
     }
 
@@ -252,6 +286,7 @@ impl CcooNverterApp {
             self.save_settings();
             self.saved_on_exit = true;
         }
+        self.preview = PreviewPanel::new(None, self.preview.open);
         if let Some(mut job) = self.job.take() {
             job.cancel();
             log::info!("Waiting for the conversion worker to stop...");
@@ -357,18 +392,22 @@ impl CcooNverterApp {
             log::warn!("Conversion already in progress");
             return;
         }
-        let batch = match prepare_batch(&self.source, &self.output) {
-            Ok(b) => b,
-            Err(e) => {
-                let (title, msg) = e.dialog();
-                let kind = if title == "Info" {
-                    controller::MessageKind::Info
-                } else {
-                    controller::MessageKind::Error
-                };
-                dialogs::show(Some(frame), kind, title, &msg);
-                return;
-            }
+        // Dropped files (the selection) take the place of a folder scan.
+        let batch = match &self.selection {
+            Some(selection) => prepare_selection(selection, &self.output),
+            None => match prepare_batch(&self.source, &self.output) {
+                Ok(b) => b,
+                Err(e) => {
+                    let (title, msg) = e.dialog();
+                    let kind = if title == "Info" {
+                        controller::MessageKind::Info
+                    } else {
+                        controller::MessageKind::Error
+                    };
+                    dialogs::show(Some(frame), kind, title, &msg);
+                    return;
+                }
+            },
         };
         let settings = self.settings.to_convert();
         match RunningBatch::spawn(batch, settings, None) {
@@ -392,8 +431,120 @@ impl CcooNverterApp {
     // Drawing
     // ------------------------------------------------------------------
 
-    fn draw(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        panel(ui, |ui| self.draw_paths(ui, actions));
+    /// Handle files dropped on the window: a folder becomes the source,
+    /// RAW files are staged for conversion, the rest get a message.
+    fn handle_drops(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .filter(|p| !p.as_os_str().is_empty())
+                .collect()
+        });
+        if dropped.is_empty() {
+            return;
+        }
+        if self.is_converting() {
+            self.set_notice("Conversion running: the drop was ignored.".to_string());
+            return;
+        }
+        log::info!("Dropped {} item(s)", dropped.len());
+        match plan_drop(&dropped, |p| p.is_dir()) {
+            DropPlan::SetSource { folder, notice } => {
+                log::info!("Source folder from drop: {}", folder.display());
+                self.source = folder.to_string_lossy().into_owned();
+                self.selection = None;
+                if let Some(n) = notice {
+                    self.set_notice(n);
+                }
+            }
+            DropPlan::Files { selection, notice } => {
+                log::info!(
+                    "Dropped {} RAW file(s) from {}",
+                    selection.files.len(),
+                    selection.root.display()
+                );
+                self.source = selection.root.to_string_lossy().into_owned();
+                let msg = notice.unwrap_or_else(|| {
+                    format!(
+                        "{} RAW file(s) ready. Press the button to convert just these.",
+                        selection.files.len()
+                    )
+                });
+                self.selection = Some(selection);
+                self.set_notice(msg);
+            }
+            DropPlan::Ignored { notice } => self.set_notice(notice),
+        }
+    }
+
+    fn set_notice(&mut self, text: String) {
+        log::info!("{text}");
+        self.notice = Some((text, Instant::now()));
+    }
+
+    /// Hover state while files are dragged over the window, and the notice.
+    fn draw_overlays(&mut self, ctx: &egui::Context) {
+        let rect = ctx.content_rect();
+        let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        if hovering {
+            let painter =
+                ctx.layer_painter(LayerId::new(Order::Foreground, Id::unique("drop_hover")));
+            painter.rect_filled(rect, 0.0, Color32::from_black_alpha(190));
+            painter.rect_stroke(
+                rect.shrink(10.0),
+                0.0,
+                Stroke::new(3.0, ACCENT),
+                StrokeKind::Inside,
+            );
+            painter.text(
+                rect.center() - vec2(0.0, 14.0),
+                Align2::CENTER_CENTER,
+                "Drop a folder or RAW files",
+                theme::font_header(),
+                ACCENT,
+            );
+            painter.text(
+                rect.center() + vec2(0.0, 14.0),
+                Align2::CENTER_CENTER,
+                "A folder sets the source. Files convert just those files.",
+                theme::font_body(),
+                TEXT,
+            );
+        }
+        let expired = self
+            .notice
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() >= NOTICE_TIME);
+        if expired {
+            self.notice = None;
+        }
+        if let Some((text, shown)) = &self.notice {
+            ctx.request_repaint_after(NOTICE_TIME.saturating_sub(shown.elapsed()));
+            let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::unique("notice")));
+            let galley = painter.layout_no_wrap(text.clone(), theme::font_body_bold(), TEXT);
+            let w = galley.size().x + 28.0;
+            let h = galley.size().y + 14.0;
+            let rect = egui::Rect::from_center_size(
+                egui::pos2(rect.center().x, rect.bottom() - h / 2.0 - 12.0),
+                vec2(w, h),
+            );
+            painter.rect_filled(rect, 0.0, PANEL);
+            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, ACCENT), StrokeKind::Inside);
+            painter.galley(rect.center() - galley.size() / 2.0, galley.clone(), TEXT);
+        }
+    }
+
+    fn draw(&mut self, ui: &mut Ui, actions: &mut Vec<Action>, narrow: bool) {
+        panel(ui, |ui| self.draw_paths(ui, actions, narrow));
+        if narrow && self.preview.open {
+            ui.add_space(PAD_MEDIUM);
+            let embedded = self.settings.extract_embedded;
+            panel(ui, |ui| {
+                self.preview.draw(ui, NARROW_PREVIEW_HEIGHT, embedded);
+            });
+        }
         ui.add_space(PAD_MEDIUM);
         panel(ui, |ui| self.draw_settings(ui, actions));
         ui.add_space(PAD_MEDIUM);
@@ -404,12 +555,49 @@ impl CcooNverterApp {
         self.draw_footer(ui);
     }
 
-    fn draw_paths(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        ui.label(
-            RichText::new("DIRECTORY PATHS")
-                .font(theme::font_body_bold())
-                .color(ACCENT),
-        );
+    fn draw_scrolling_column(&mut self, ui: &mut Ui, actions: &mut Vec<Action>, narrow: bool) {
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                Frame::new()
+                    .inner_margin(Margin::symmetric(PAD_LARGE as i8, 0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.draw(ui, actions, narrow);
+                    });
+            });
+    }
+
+    fn draw_paths(&mut self, ui: &mut Ui, actions: &mut Vec<Action>, narrow: bool) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("DIRECTORY PATHS")
+                    .font(theme::font_body_bold())
+                    .color(ACCENT),
+            );
+            if narrow {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let text = if self.preview.open {
+                        "HIDE PREVIEW"
+                    } else {
+                        "SHOW PREVIEW"
+                    };
+                    if widgets::outline_button(
+                        ui,
+                        text,
+                        vec2(104.0, 20.0),
+                        theme::font_small_bold(),
+                        ACCENT,
+                        Color32::TRANSPARENT,
+                        BORDER,
+                    )
+                    .clicked()
+                    {
+                        self.preview.open = !self.preview.open;
+                    }
+                });
+            }
+        });
         let cols = Columns {
             label: 186.0,
             value: 84.0,
@@ -443,6 +631,34 @@ impl CcooNverterApp {
         };
         if folder_row(ui, "SOURCE FOLDER", &mut self.source, "") {
             actions.push(Action::BrowseSource);
+        }
+        if let Some(selection) = &self.selection {
+            let count = selection.files.len();
+            let mut clear = false;
+            ui.horizontal(|ui| {
+                ui.add_space(cols.label + ui.spacing().item_spacing.x);
+                ui.label(
+                    RichText::new(format!("{count} dropped file(s) selected"))
+                        .font(theme::font_small())
+                        .color(ACCENT),
+                );
+                if widgets::outline_button(
+                    ui,
+                    "CLEAR",
+                    vec2(48.0, 18.0),
+                    theme::font_small_bold(),
+                    TEXT_DIM,
+                    Color32::TRANSPARENT,
+                    BORDER,
+                )
+                .clicked()
+                {
+                    clear = true;
+                }
+            });
+            if clear {
+                self.selection = None;
+            }
         }
         if folder_row(
             ui,
@@ -571,6 +787,8 @@ impl CcooNverterApp {
                     {
                         actions.push(Action::ResetAdjustments);
                     }
+                    ui.add_space(10.0);
+                    widgets::checkbox(ui, &mut s.tone_curve, "Tone Curve", theme::font_body());
                 });
             });
 
@@ -609,6 +827,26 @@ impl CcooNverterApp {
                                 ui.selectable_value(&mut s.style, st, st.as_str());
                             }
                         });
+                },
+            );
+
+            cols.row(
+                ui,
+                |ui| label(ui, "Exposure (EV):"),
+                |ui, w| {
+                    widgets::color_slider(
+                        ui,
+                        &mut s.exposure_ev,
+                        config::MIN_EXPOSURE_EV..=config::MAX_EXPOSURE_EV,
+                        Some(0.05),
+                        ACCENT,
+                        theme::ACCENT_HOVER,
+                        w,
+                    );
+                    s.exposure_ev
+                },
+                |ui, ev| {
+                    widgets::value_label(ui, &format!("{ev:+.2}"));
                 },
             );
 
@@ -991,6 +1229,24 @@ impl eframe::App for CcooNverterApp {
         self.poll_job(&ctx, frame);
         self.poll_update(&ctx);
         self.handle_close_request(&ctx, frame);
+        self.handle_drops(&ctx);
+        if let Some(s) = &self.selection {
+            // The selection belongs to its root; any other source replaces it.
+            if self.source.trim() != s.root.to_string_lossy() {
+                self.selection = None;
+            }
+        }
+
+        let wide = ctx.content_rect().width() >= WIDE_LAYOUT_WIDTH;
+        let visible = wide || self.preview.open;
+        self.preview.tick(
+            &ctx,
+            &self.source,
+            self.selection.as_ref(),
+            &self.settings.to_convert(),
+            self.is_converting(),
+            visible,
+        );
 
         let mut actions = Vec::new();
         egui::CentralPanel::default()
@@ -1000,19 +1256,39 @@ impl eframe::App for CcooNverterApp {
                     .inner_margin(Margin::symmetric(0, PAD_MEDIUM as i8)),
             )
             .show(ui, |ui| {
-                ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        Frame::new()
-                            .inner_margin(Margin::symmetric(PAD_LARGE as i8, 0))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                self.draw(ui, &mut actions);
-                            });
+                let size = ui.available_size();
+                if wide {
+                    // Two columns: settings left (scrolls), preview right.
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2(SETTINGS_COLUMN, size.y),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.set_max_width(SETTINGS_COLUMN);
+                                self.draw_scrolling_column(ui, &mut actions, false);
+                            },
+                        );
+                        let right = (size.x - SETTINGS_COLUMN - PAD_LARGE).max(240.0);
+                        ui.allocate_ui_with_layout(
+                            vec2(right, size.y),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.set_min_width(right);
+                                let embedded = self.settings.extract_embedded;
+                                panel(ui, |ui| {
+                                    let image_h = (size.y - 64.0).max(120.0);
+                                    self.preview.draw(ui, image_h, embedded);
+                                });
+                            },
+                        );
                     });
+                } else {
+                    self.draw_scrolling_column(ui, &mut actions, true);
+                }
             });
         self.draw_preset_modal(&ctx, &mut actions);
         self.draw_update_modal(&ctx, &mut actions);
+        self.draw_overlays(&ctx);
 
         for action in actions {
             self.run_action(action, &ctx, frame);

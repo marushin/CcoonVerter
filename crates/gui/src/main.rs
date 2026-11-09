@@ -11,6 +11,8 @@ mod app;
 mod controller;
 mod dialogs;
 mod fonts;
+mod preview;
+mod preview_panel;
 mod theme;
 mod titlebar;
 mod widgets;
@@ -100,7 +102,10 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
             fonts::install(&cc.egui_ctx);
-            Ok(Box::new(app::CcooNverterApp::new(paths, settings, presets)))
+            let ctx = cc.egui_ctx.clone();
+            Ok(Box::new(app::CcooNverterApp::new(
+                ctx, paths, settings, presets,
+            )))
         }),
     );
     if let Err(e) = &result {

@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "ccoonverter"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ccoonverter-core",
  "eframe",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "ccoonverter-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "ccoonverter-core",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "ccoonverter-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "directories",
