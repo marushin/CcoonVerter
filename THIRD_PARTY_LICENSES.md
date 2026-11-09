@@ -2,8 +2,8 @@
 
 CcooNverter itself is released under the [MIT License](LICENSE). The release
 binaries statically link the Rust crates below. Versions are those pinned in
-`Cargo.lock` for v0.9.0; license expressions are the crates' own `license`
-fields (checked with `cargo metadata`).
+`Cargo.lock` for v1.0.0; license expressions are the crates' own `license`
+fields (checked with `cargo metadata`, 322 crates on the Windows target).
 
 ## GNU LGPL-2.1: rawler
 
@@ -14,14 +14,15 @@ fields (checked with `cargo metadata`).
 rawler (part of the dnglab project) decodes the RAW files. It is licensed under
 the [GNU Lesser General Public License v2.1](https://github.com/dnglab/dnglab/blob/main/LICENSE).
 
-**LGPL-2.1 §6 notice.** rawler is statically linked into the CcooNverter
-executables. The complete source code of CcooNverter is published under the MIT
-license at https://github.com/marushin/CcoonVerter together with `Cargo.lock`,
-and rawler's source is available from the link above and from crates.io. You may
-modify rawler (or replace it with another version), point `Cargo.toml` at your
-copy (for example with `[patch.crates-io] rawler = { path = "..." }`) and rebuild
-the application with `cargo build --release -p ccoonverter`. This satisfies the
-relinking requirement of LGPL-2.1 §6(a). rawler is used unmodified.
+rawler is statically linked into the CcooNverter executables and is used
+unmodified. Its source is available from the link above and from crates.io. The
+complete source of CcooNverter is published under the MIT license at
+https://github.com/marushin/CcoonVerter together with `Cargo.lock`, so anyone
+can modify rawler (or replace it with another version), point `Cargo.toml` at
+their copy (for example with `[patch.crates-io] rawler = { path = "..." }`) and
+rebuild with `cargo build --release -p ccoonverter`. Whether that arrangement
+fully meets the LGPL-2.1 for a statically linked executable has not been
+reviewed by a lawyer.
 
 ## Direct dependencies
 
@@ -67,17 +68,72 @@ or additional terms:
 | Crate | License | Note |
 |---|---|---|
 | epaint_default_fonts 0.37.0 | (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0 | egui's built-in fonts (Ubuntu Light, Noto Emoji, Hack) |
+| jpeg-encoder 0.7.1 | (MIT OR Apache-2.0) AND IJG | JPEG encoding, derived in part from libjpeg. Notice below |
 | option-ext 0.2.0 | MPL-2.0 | used by `dirs-sys` (via `directories`); unmodified |
 | ring 0.17.14 | Apache-2.0 AND ISC | TLS crypto for the update check (`rustls`) |
-| libwebp-sys 0.14.4 | MIT, bundles libwebp (BSD-3-Clause, Google) | C library compiled into the binaries; lossy WebP encoding |
+| libwebp-sys 0.14.4 | MIT, bundles libwebp (BSD-3-Clause, Google) | C library compiled into the binaries; lossy WebP encoding. Notice below |
 | rustls 0.23.46 | Apache-2.0 OR ISC OR MIT | TLS for the update check |
 | webpki-roots 1.0.11 | CDLA-Permissive-2.0 | Mozilla root certificates |
 | clipboard-win, error-code | BSL-1.0 | Windows clipboard |
 | self_cell 1.3.0 | Apache-2.0 OR GPL-2.0-only | used by `epaint`; used under Apache-2.0 |
 | tiny-skia 0.11.4 | BSD-3-Clause | Linux only (Wayland window decorations) |
 | alloc-no-stdlib, brotli-decompressor | BSD-3-Clause (OR MIT) | |
+| moxcms, pxfm | BSD-3-Clause OR Apache-2.0 | colour handling, via `image`; used under Apache-2.0 |
 
 The full, current list can be produced with
 `cargo metadata --format-version 1` (field `license` of each package) or
 `cargo tree -e normal --prefix none`. The license texts are included in each
 crate's source on crates.io.
+
+The Korean interface uses a system font (Malgun Gothic on Windows, Apple SD
+Gothic Neo on macOS). No Korean font is included in the executable.
+
+## Required notices
+
+### libwebp (BSD-3-Clause)
+
+```
+Copyright (c) 2010, Google Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+
+  * Neither the name of Google nor the names of its contributors may
+    be used to endorse or promote products derived from this software
+    without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+libwebp also carries an additional patent grant from Google, in the file
+`PATENTS` of its source (crate `libwebp-sys`, folder `vendor`).
+
+### Independent JPEG Group
+
+This software is based in part on the work of the Independent JPEG Group
+(through the `jpeg-encoder` crate).
+
+### Fonts
+
+egui's built-in fonts are covered by the SIL Open Font License 1.1 (Noto Emoji,
+Hack) and the Ubuntu Font Licence 1.0 (Ubuntu Light). The licence texts are in
+the `epaint_default_fonts` crate.
