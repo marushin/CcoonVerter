@@ -119,6 +119,24 @@ cargo test --workspace
   ```
 - Linux 빌드에는 `libgtk-3-dev libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev`가 필요합니다(공식 배포는 Windows/macOS만).
 
+### macOS에서 직접 빌드하고 확인하기
+
+```bash
+xcode-select --install                      # 처음 한 번
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust 설치(처음 한 번)
+git clone https://github.com/marushin/CcoonVerter.git && cd CcoonVerter
+bash scripts/build_macos.sh                 # arm64 + x86_64 빌드 → .app → ad-hoc 서명 → DMG
+open dist/macos/CcooNverter_v0.9.0_macos_universal.dmg
+```
+
+확인 항목: `file dist/macos/CcooNverter.app/Contents/MacOS/CcooNverter`가 "universal binary with 2 architectures"로 나오는지, 우클릭 → 열기로 창이 뜨는지, 한글 폴더를 골라 변환이 되는지, 설정이 `~/Library/Application Support/ccoon.CcooNverter/settings.json`에 저장되는지. 전체 체크리스트는 [docs/03_MAC_BUILD_PLAN.md](docs/03_MAC_BUILD_PLAN.md) §7에 있습니다. 창이 뜨지 않거나 그리기가 깨지면 `cargo build --release -p ccoonverter --features wgpu`(Metal)로 다시 빌드해 보세요.
+
+## 릴리스 절차 (관리자용)
+
+1. `Cargo.toml`의 `[workspace.package] version`과 `CHANGELOG.md`의 `## vX.Y.Z` 절을 맞춥니다.
+2. `main`에 푸시하면 [CI](https://github.com/marushin/CcoonVerter/actions/workflows/ci.yml)가 Linux/Windows/macOS에서 fmt, clippy, 테스트, 릴리스 빌드를 실행합니다.
+3. `git tag vX.Y.Z && git push origin vX.Y.Z`를 하면 [Release 워크플로](.github/workflows/release.yml)가 Windows exe, macOS universal DMG, `SHA256SUMS.txt`를 만들어 GitHub Release에 첨부합니다. 릴리스 본문은 CHANGELOG의 해당 절입니다.
+
 ## 라이선스
 
 - CcooNverter: [MIT](LICENSE)
