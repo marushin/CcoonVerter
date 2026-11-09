@@ -35,7 +35,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev libxkbcommon-dev libwayland-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libgl1-mesa-dev libglib2.0-dev libatk1.0-dev
+            libgl1-mesa-dev libglib2.0-dev libatk1.0-dev \
+            fonts-noto-cjk
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
