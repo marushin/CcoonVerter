@@ -4,8 +4,8 @@
 //!
 //! Order, on linear-sRGB values:
 //!
-//! 1. Exposure gain = white balance gains x auto exposure (1 % highlight clip,
-//!    computed once from the full-resolution image, see [`BaseStats`])
+//! 1. Exposure gain = white balance gains x auto exposure (metered once on
+//!    the full-resolution image, see [`crate::metering`] and [`BaseStats`])
 //!    x `brightness` x `2^exposure_ev`.
 //!    **Brightness and EV are the same linear stage**: brightness 2.0 is
 //!    exactly +1 EV. Brightness (0..2, 1 = neutral) is kept for compatibility
@@ -25,7 +25,7 @@ use std::sync::OnceLock;
 
 use rayon::prelude::*;
 
-use crate::develop::{auto_gain, srgb_oetf, BaseStats};
+use crate::develop::{srgb_oetf, BaseStats};
 use crate::error::{ConvertError, Result};
 use crate::settings::{ConvertSettings, PictureStyle, WhiteBalance};
 use crate::{adjust, resize, sharpen, style, RgbF32Image};
@@ -68,11 +68,11 @@ pub fn exposure_gains(
     brightness: f32,
     exposure_ev: f32,
 ) -> [f32; 3] {
-    let (white, wb) = match white_balance {
-        WhiteBalance::CameraDefault => (stats.white_camera, [1.0, 1.0, 1.0]),
-        WhiteBalance::Auto => (stats.white_auto, stats.auto_gains),
+    let (base, wb) = match white_balance {
+        WhiteBalance::CameraDefault => (stats.exposure_camera, [1.0, 1.0, 1.0]),
+        WhiteBalance::Auto => (stats.exposure_auto, stats.auto_gains),
     };
-    let gain = auto_gain(white, brightness) * 2f32.powf(exposure_ev);
+    let gain = (base * brightness).max(0.0) * 2f32.powf(exposure_ev);
     [wb[0] * gain, wb[1] * gain, wb[2] * gain]
 }
 
@@ -191,6 +191,24 @@ pub fn apply_exposure_and_tone(img: &mut RgbF32Image, stats: &BaseStats, params:
     });
 }
 
+/// Mean Rec.601 luminance (8-bit scale) of `img` after `gains`, highlights
+/// and the default tone curve. Sequential on purpose (used by metering).
+pub fn mean_display_luma(img: &RgbF32Image, gains: [f32; 3]) -> f64 {
+    let lut = tone_lut(true);
+    let mut sum = 0f64;
+    for p in img.pixels() {
+        let base_max = p.0[0].max(p.0[1]).max(p.0[2]);
+        let q = highlight_pixel(
+            [p.0[0] * gains[0], p.0[1] * gains[1], p.0[2] * gains[2]],
+            base_max,
+        );
+        sum += 0.299 * lut_lookup(lut, q[0]) as f64
+            + 0.587 * lut_lookup(lut, q[1]) as f64
+            + 0.114 * lut_lookup(lut, q[2]) as f64;
+    }
+    255.0 * sum / (img.width() * img.height()).max(1) as f64
+}
+
 fn check(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
         Err(ConvertError::Cancelled)
@@ -230,6 +248,9 @@ mod tests {
             white_camera: white,
             white_auto: white,
             auto_gains: [1.0, 1.0, 1.0],
+            exposure_camera: crate::develop::auto_gain(white, 1.0),
+            exposure_auto: crate::develop::auto_gain(white, 1.0),
+            meter_source: Default::default(),
         }
     }
 
@@ -302,6 +323,9 @@ mod tests {
             white_camera: 0.5,
             white_auto: 0.25,
             auto_gains: [2.0, 1.0, 0.5],
+            exposure_camera: 2.0,
+            exposure_auto: 4.0,
+            meter_source: Default::default(),
         };
         let g = exposure_gains(&s, WhiteBalance::Auto, 1.0, 0.0);
         assert!((g[0] - 8.0).abs() < 1e-5 && (g[1] - 4.0).abs() < 1e-5);

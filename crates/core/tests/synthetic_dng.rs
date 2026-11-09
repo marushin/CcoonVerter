@@ -174,23 +174,36 @@ fn brightness_and_levels_change_output() {
         on_conflict: ConflictPolicy::Overwrite,
         ..Default::default()
     };
-    let lum = |s: &ConvertSettings| {
+    let image = |s: &ConvertSettings| {
         let (out, ..) = run(&src, dir.path(), s);
-        let img = image::open(out).unwrap().into_rgb8();
-        mean_rgb(&img, 0, 64, 0, 48).iter().sum::<f64>() / 3.0
+        image::open(out).unwrap().into_rgb8()
     };
-    let normal = lum(&base);
-    let dark = lum(&ConvertSettings {
+    let lum = |img: &image::RgbImage| mean_rgb(img, 0, 64, 0, 48).iter().sum::<f64>() / 3.0;
+    let normal = image(&base);
+    let dark = image(&ConvertSettings {
         brightness: 0.5,
         ..base.clone()
     });
-    let crushed = lum(&ConvertSettings {
+    let crushed = image(&ConvertSettings {
         black_point: 80,
         white_point: 160,
         ..base.clone()
     });
-    assert!(dark < normal - 20.0, "{dark} vs {normal}");
-    assert!((crushed - normal).abs() > 5.0, "{crushed} vs {normal}");
+    assert!(
+        lum(&dark) < lum(&normal) - 20.0,
+        "{} vs {}",
+        lum(&dark),
+        lum(&normal)
+    );
+    // Levels stretch the range: the mean may stay put, the pixels cannot.
+    let change = normal
+        .as_raw()
+        .iter()
+        .zip(crushed.as_raw())
+        .map(|(a, b)| a.abs_diff(*b) as f64)
+        .sum::<f64>()
+        / normal.as_raw().len() as f64;
+    assert!(change > 5.0, "{change}");
 }
 
 /// Writes a 24 MP synthetic DNG to `$CCOON_FIXTURE_OUT` for manual CLI timing:
@@ -209,6 +222,38 @@ fn write_large_fixture() {
         ..Default::default()
     };
     std::fs::write(out, synthetic_dng(&spec)).unwrap();
+}
+
+#[test]
+fn xmp_rating_reaches_the_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bytes = synthetic_dng(&DngSpec::default());
+    bytes.extend_from_slice(b"<x:xmpmeta><rdf:Description xmp:Rating=\"3\"/></x:xmpmeta>");
+    let src = dir.path().join("rated.DNG");
+    std::fs::write(&src, bytes).unwrap();
+    let (out, ..) = run(
+        &src,
+        dir.path(),
+        &ConvertSettings {
+            preserve_exif: true,
+            on_conflict: ConflictPolicy::Overwrite,
+            ..Default::default()
+        },
+    );
+    let jpeg = std::fs::read(out).unwrap();
+    assert_eq!(ccoonverter_core::exif::find_xmp_rating(&jpeg), Some(3));
+    assert!(image::load_from_memory(&jpeg).is_ok());
+    // Without EXIF preservation nothing is written.
+    let (out, ..) = run(
+        &src,
+        dir.path(),
+        &ConvertSettings {
+            on_conflict: ConflictPolicy::Overwrite,
+            ..Default::default()
+        },
+    );
+    let jpeg = std::fs::read(out).unwrap();
+    assert_eq!(ccoonverter_core::exif::find_xmp_rating(&jpeg), None);
 }
 
 /// Real camera files: put them in `<repo>/tests/samples/` (gitignored).

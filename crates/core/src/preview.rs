@@ -34,7 +34,7 @@ pub fn load_base(path: &Path, long_edge: u32, cancel: &AtomicBool) -> Result<Lin
     let source = RawSource::new(path).map_err(|e| ConvertError::io(path, e))?;
     let ctx = RawCtx::new(&source);
     let decoder = ctx.decoder()?;
-    let base = develop::develop_linear(ctx.source, decoder, cancel)?;
+    let base = develop::develop_linear(ctx.source, decoder, ctx.raw_orientation(), cancel)?;
     check(cancel)?;
     Ok(LinearBase {
         image: resize::reduce_long_edge_f32(base.image, long_edge),

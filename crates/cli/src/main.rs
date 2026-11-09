@@ -123,6 +123,9 @@ struct ConvertArgs {
     /// Copy EXIF metadata into the JPEG.
     #[arg(long)]
     exif: bool,
+    /// Give the JPEG the modification time of the RAW file.
+    #[arg(long)]
+    keep_date: bool,
     /// What to do when the JPEG already exists (default: suffix).
     #[arg(long, value_enum)]
     on_conflict: Option<ConflictArg>,
@@ -197,6 +200,9 @@ impl ConvertArgs {
         }
         if self.no_tone_curve {
             s.tone_curve = false;
+        }
+        if self.keep_date {
+            s.keep_source_date = true;
         }
         if let Some(v) = self.sharpen {
             s.sharpen = v;

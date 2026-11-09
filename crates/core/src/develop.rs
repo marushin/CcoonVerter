@@ -13,9 +13,10 @@
 //! The statistics, computed once at full resolution:
 //!
 //! 1. grey-world gains for the "Auto" white balance (on unclipped pixels),
-//! 2. the auto exposure point like dcraw/LibRaw with `no_auto_bright=False`:
-//!    the per-channel 99th percentile maps to white (1 % highlight clip),
-//!    for both the camera and the auto white balance.
+//! 2. the 1 % highlight clip point like dcraw/LibRaw with
+//!    `no_auto_bright=False`, which feeds the scene model,
+//! 3. the auto exposure gain itself, from [`crate::metering`]: anchored on
+//!    the embedded JPEG when there is one, else the scene model.
 //!
 //! The base is rotated upright (EXIF orientation applied to the pixels,
 //! LibRaw rotates too).
@@ -28,6 +29,7 @@ use rawler::rawsource::RawSource;
 use rayon::prelude::*;
 
 use crate::error::{ConvertError, Result};
+use crate::metering::{self, MeterSource};
 use crate::RgbF32Image;
 
 /// Image statistics taken once at full resolution, so a downscaled preview
@@ -40,15 +42,34 @@ pub struct BaseStats {
     pub white_auto: f32,
     /// Grey-world gains used by the "Auto" white balance.
     pub auto_gains: [f32; 3],
+    /// Auto exposure gain with the camera white balance.
+    pub exposure_camera: f32,
+    /// Auto exposure gain with the auto white balance.
+    pub exposure_auto: f32,
+    /// How the exposure gains were obtained.
+    pub meter_source: MeterSource,
 }
 
 impl BaseStats {
+    /// Statistics without a JPEG reference (scene metering).
     pub fn measure(img: &RgbF32Image) -> Self {
+        Self::measure_with_target(img, None)
+    }
+
+    /// Statistics with `target`, the displayed mean luminance of the camera
+    /// JPEG (8-bit scale), when one is available.
+    pub fn measure_with_target(img: &RgbF32Image, target: Option<f64>) -> Self {
         let auto_gains = grey_world_gains(img);
+        let white_camera = percentile_white(img, AUTO_BRIGHT_CLIP);
+        let white_auto = percentile_white_gained(img, AUTO_BRIGHT_CLIP, auto_gains);
+        let m = metering::meter(img, white_camera, white_auto, auto_gains, target);
         Self {
-            white_camera: percentile_white(img, AUTO_BRIGHT_CLIP),
-            white_auto: percentile_white_gained(img, AUTO_BRIGHT_CLIP, auto_gains),
+            white_camera,
+            white_auto,
             auto_gains,
+            exposure_camera: m.gain_camera,
+            exposure_auto: m.gain_auto,
+            meter_source: m.source,
         }
     }
 }
@@ -61,10 +82,10 @@ pub struct LinearBase {
     pub stats: BaseStats,
 }
 
-/// Upper bound of the auto exposure gain (dcraw has none; this guards
-/// against amplifying noise of an all-black frame to grey mush).
+/// Upper bound of the auto exposure gain (guards against amplifying noise of
+/// an all-black frame to grey mush).
 pub const MAX_AUTO_GAIN: f32 = 16.0;
-/// Fraction of pixels allowed to clip to white (dcraw: 1 %).
+/// Fraction of pixels used for the 1 % clip point (dcraw: 1 %).
 pub const AUTO_BRIGHT_CLIP: f32 = 0.01;
 
 fn check(cancel: &AtomicBool) -> Result<()> {
@@ -76,9 +97,14 @@ fn check(cancel: &AtomicBool) -> Result<()> {
 }
 
 /// Develop a RAW into an upright linear-sRGB image with its statistics.
+///
+/// `orientation` is the image's EXIF orientation (1..8). rawler 0.8.0 fills
+/// `RawImage::orientation` only for DNG, so the caller supplies it from the
+/// metadata (see `RawCtx::raw_orientation`).
 pub fn develop_linear(
     source: &RawSource,
     decoder: &dyn Decoder,
+    orientation: u16,
     cancel: &AtomicBool,
 ) -> Result<LinearBase> {
     let params = RawDecodeParams::default();
@@ -86,7 +112,6 @@ pub fn develop_linear(
     check(cancel)?;
 
     normalize_wb(&mut raw.wb_coeffs);
-    let orientation = raw.orientation.to_u16();
     log::debug!(
         "develop: {} {} {}x{} cpp={} wb={:?} orientation={}",
         raw.clean_make,
@@ -113,10 +138,14 @@ pub fn develop_linear(
 
     let img = intermediate_to_rgb(inter)?;
     check(cancel)?;
-    let stats = BaseStats::measure(&img);
+    let target = metering::preview_target_luma(source.buf(), img.width(), img.height());
+    check(cancel)?;
+    let stats = BaseStats::measure_with_target(&img, target);
     log::debug!(
-        "develop: auto-bright white={:.4}, auto WB gains {:?}",
+        "develop: white={:.4}, exposure gain {:.3} ({:?}), auto WB gains {:?}",
         stats.white_camera,
+        stats.exposure_camera,
+        stats.meter_source,
         stats.auto_gains
     );
     Ok(LinearBase {

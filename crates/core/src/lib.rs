@@ -8,6 +8,7 @@
 //! - [`scan`] RAW discovery [`scan_folder`]
 //! - [`embedded`] embedded JPEG extraction [`raw.extract_thumb()`]
 //! - [`develop`] rawler development to linear RGB + exposure statistics
+//! - [`metering`] auto exposure: anchored on the embedded JPEG, else a scene model [new]
 //! - [`render`] the shared chain from linear base to final pixels: exposure,
 //!   highlights, tone curve, adjustments, style, resize, sharpening [new]
 //! - [`preview`] reduced-resolution sources for the GUI preview [new]
@@ -32,6 +33,7 @@ pub mod error;
 pub mod exif;
 pub mod job;
 pub mod logging;
+pub mod metering;
 pub mod paths;
 pub mod pipeline;
 pub mod presets;

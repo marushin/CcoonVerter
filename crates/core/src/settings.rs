@@ -175,6 +175,38 @@ impl FromStr for ConflictPolicy {
     }
 }
 
+/// Language of the user interface (new in 0.11.0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum UiLanguage {
+    /// Follow the system locale.
+    #[default]
+    Auto,
+    English,
+    Korean,
+}
+
+impl UiLanguage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiLanguage::Auto => "auto",
+            UiLanguage::English => "en",
+            UiLanguage::Korean => "ko",
+        }
+    }
+}
+
+impl FromStr for UiLanguage {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match normalize_name(s).as_str() {
+            "auto" | "system" => Ok(UiLanguage::Auto),
+            "en" | "eng" | "english" => Ok(UiLanguage::English),
+            "ko" | "kr" | "korean" | "kor" => Ok(UiLanguage::Korean),
+            _ => Err(format!("unknown language '{s}' (expected auto, en or ko)")),
+        }
+    }
+}
+
 fn normalize_name(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -209,6 +241,7 @@ macro_rules! string_enum_serde {
 }
 string_enum_serde!(WhiteBalance);
 string_enum_serde!(PictureStyle);
+string_enum_serde!(UiLanguage);
 
 /// Settings that affect the conversion of each file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -255,6 +288,9 @@ pub struct ConvertSettings {
     /// Output sharpening amount (0 = off, new in 0.10.0).
     #[serde(deserialize_with = "lenient::f32_")]
     pub sharpen: f32,
+    /// Give the output the modification time of the source (new in 0.11.0).
+    #[serde(deserialize_with = "lenient::bool_")]
+    pub keep_source_date: bool,
 }
 
 impl Default for ConvertSettings {
@@ -276,6 +312,7 @@ impl Default for ConvertSettings {
             exposure_ev: DEFAULT_EXPOSURE_EV,
             tone_curve: true,
             sharpen: DEFAULT_SHARPEN,
+            keep_source_date: false,
         }
     }
 }
@@ -410,6 +447,8 @@ pub struct AppSettings {
     /// Preview panel expanded in the narrow layout (new in 0.10.0).
     #[serde(deserialize_with = "lenient::bool_")]
     pub preview_open: bool,
+    /// Interface language (new in 0.11.0).
+    pub language: UiLanguage,
 }
 
 impl Default for AppSettings {
@@ -420,6 +459,7 @@ impl Default for AppSettings {
             last_source: None,
             check_updates: true,
             preview_open: false,
+            language: UiLanguage::Auto,
         }
     }
 }
@@ -591,6 +631,8 @@ mod tests {
         assert!(s.convert.tone_curve);
         assert_eq!(s.convert.sharpen, DEFAULT_SHARPEN);
         assert!(!s.preview_open);
+        assert!(!s.convert.keep_source_date);
+        assert_eq!(s.language, UiLanguage::Auto);
 
         let v090 = r#"{"resize": 0, "quality": 90, "brightness": 1.4,
             "white_balance": "Auto", "style": "HDR", "rgb_red": 1.0, "rgb_green": 1.0,
@@ -624,6 +666,23 @@ mod tests {
         assert!(!clamped.convert.tone_curve);
         assert_eq!(clamped.convert.sharpen, MIN_SHARPEN);
         assert!(clamped.preview_open);
+    }
+
+    #[test]
+    fn language_setting_roundtrip_and_unknown_values() {
+        let mut s = AppSettings {
+            language: UiLanguage::Korean,
+            ..Default::default()
+        };
+        s.convert.keep_source_date = true;
+        let json = s.to_json();
+        assert!(json.contains("\"language\": \"ko\""), "{json}");
+        let back = AppSettings::from_json(&json).unwrap();
+        assert_eq!(back, s);
+        let en = AppSettings::from_json(r#"{"language": "English"}"#).unwrap();
+        assert_eq!(en.language, UiLanguage::English);
+        let unknown = AppSettings::from_json(r#"{"language": "Klingon"}"#).unwrap();
+        assert_eq!(unknown.language, UiLanguage::Auto);
     }
 
     #[test]

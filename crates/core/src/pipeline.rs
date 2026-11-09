@@ -214,8 +214,13 @@ impl<'a> RawCtx<'a> {
         })
     }
 
+    /// RAW metadata plus the rating from the file's XMP packet, if any.
     fn exif_info(&self) -> Option<ExifInfo> {
-        self.metadata.as_ref().map(ExifInfo::from_rawler)
+        let mut info = self.metadata.as_ref().map(ExifInfo::from_rawler)?;
+        if info.rating.is_none() {
+            info.rating = exifmod::find_xmp_rating(self.source.buf());
+        }
+        Some(info)
     }
 
     /// Orientation of the RAW (EXIF tag value 1..8), 1 if unknown.
@@ -297,6 +302,11 @@ pub fn convert_one(
             })
         }
     };
+    if settings.keep_source_date {
+        if let Err(e) = copy_modified_time(&task.source, &output) {
+            log::warn!("{name}: could not copy the source file date: {e}");
+        }
+    }
     log::info!(
         "Successfully converted {name} to {} ({:?}, {}x{}, {:.2}s)",
         output.display(),
@@ -315,19 +325,50 @@ pub fn convert_one(
     })
 }
 
-/// EXIF payload for re-encoded pixels that are already upright.
+/// Give `dst` the modification time of `src`.
+fn copy_modified_time(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let modified = fs::metadata(src)?.modified()?;
+    let f = OpenOptions::new().write(true).open(dst)?;
+    f.set_modified(modified)
+}
+
+/// EXIF payload for re-encoded pixels that are already upright: the
+/// embedded JPEG's EXIF, enriched with tags only the RAW has, else one built
+/// from the RAW metadata.
 fn exif_for_upright(ctx: &RawCtx, embedded_jpeg: Option<&[u8]>) -> Option<Vec<u8>> {
+    let info = ctx.exif_info();
     if let Some(mut tiff) = embedded_jpeg.and_then(exifmod::jpeg_exif) {
+        if let Some(info) = &info {
+            if exifmod::lacks_fields(&tiff, info) {
+                match exifmod::merge_exif(&tiff, info, 1) {
+                    Ok(merged) => return Some(merged),
+                    Err(e) => log::warn!("Could not merge EXIF: {e}"),
+                }
+            }
+        }
         exifmod::set_tiff_orientation(&mut tiff, 1);
         return Some(tiff);
     }
-    let info = ctx.exif_info()?;
-    match exifmod::build_exif(&info, 1) {
+    match exifmod::build_exif(&info?, 1) {
         Ok(t) => Some(t),
         Err(e) => {
             log::warn!("Could not build EXIF: {e}");
             None
         }
+    }
+}
+
+/// Add the XMP rating to a finished JPEG when the RAW has one.
+fn with_rating(ctx: &RawCtx, preserve: bool, jpeg: Vec<u8>) -> Vec<u8> {
+    if !preserve {
+        return jpeg;
+    }
+    match ctx.exif_info().and_then(|i| i.rating) {
+        Some(r) => exifmod::add_xmp_rating(&jpeg, r).unwrap_or_else(|e| {
+            log::warn!("Could not write the XMP rating: {e}");
+            jpeg
+        }),
+        None => jpeg,
     }
 }
 
@@ -359,16 +400,28 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
             if s.resize == 0 {
                 // Lossless path: keep the camera's JPEG bytes.
                 let jpeg = if s.preserve_exif {
-                    if own_orientation.is_some() || (own_exif.is_some() && orientation == 1) {
+                    let info = ctx.exif_info();
+                    let keep_payload =
+                        own_orientation.is_some() || (own_exif.is_some() && orientation == 1);
+                    let merged = match (&own_exif, &info) {
+                        (Some(tiff), Some(i)) if keep_payload && exifmod::lacks_fields(tiff, i) => {
+                            exifmod::merge_exif(tiff, i, orientation).ok()
+                        }
+                        _ => None,
+                    };
+                    let jpeg = if let Some(tiff) = merged {
+                        exifmod::replace_jpeg_exif(&data, Some(&tiff))?
+                    } else if keep_payload {
                         data
                     } else {
                         // No usable EXIF in the preview: build one from RAW metadata.
-                        let tiff = match ctx.exif_info() {
-                            Some(info) => exifmod::build_exif(&info, orientation)?,
+                        let tiff = match &info {
+                            Some(info) => exifmod::build_exif(info, orientation)?,
                             None => exifmod::orientation_only_exif(orientation)?,
                         };
                         exifmod::replace_jpeg_exif(&data, Some(&tiff))?
-                    }
+                    };
+                    with_rating(ctx, true, jpeg)
                 } else if orientation != 1 {
                     let tiff = exifmod::orientation_only_exif(orientation)?;
                     exifmod::replace_jpeg_exif(&data, Some(&tiff))?
@@ -400,6 +453,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
                 None
             };
             let jpeg = encode::encode_rgb8(&img, s.quality, exif.as_deref())?;
+            let jpeg = with_rating(ctx, s.preserve_exif, jpeg);
             Ok(Encoded {
                 width: img.width(),
                 height: img.height(),
@@ -417,6 +471,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
                 None
             };
             let jpeg = encode::encode_rgb8(&img, s.quality, exif.as_deref())?;
+            let jpeg = with_rating(ctx, s.preserve_exif, jpeg);
             Ok(Encoded {
                 width: img.width(),
                 height: img.height(),
@@ -429,7 +484,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
 
 fn encode_developed(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Result<Encoded> {
     let decoder = ctx.decoder()?;
-    let base = develop::develop_linear(ctx.source, decoder, cancel)?;
+    let base = develop::develop_linear(ctx.source, decoder, ctx.raw_orientation(), cancel)?;
     check(cancel)?;
     let img = render::render(
         base.image,
@@ -449,6 +504,7 @@ fn encode_developed(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> R
         None
     };
     let jpeg = encode::encode_rgb8(&img8, s.quality, exif.as_deref())?;
+    let jpeg = with_rating(ctx, s.preserve_exif, jpeg);
     Ok(Encoded {
         width: img8.width(),
         height: img8.height(),
@@ -674,6 +730,54 @@ mod tests {
             convert_one(&t, &s3, &cancel).unwrap(),
             ConvertOutcome::Skipped { .. }
         ));
+    }
+
+    #[test]
+    fn keep_source_date_copies_mtime_when_enabled() {
+        use crate::testutil::{synthetic_dng, DngSpec};
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.DNG");
+        fs::write(&src, synthetic_dng(&DngSpec::default())).unwrap();
+        // An old date, clearly not "now".
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_500_000_000);
+        fs::File::options()
+            .write(true)
+            .open(&src)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let out = dir.path().join("out");
+        let t = FileTask::new(&src, dir.path(), &out);
+        let cancel = AtomicBool::new(false);
+        let ConvertOutcome::Converted { output, .. } = convert_one(
+            &t,
+            &ConvertSettings {
+                on_conflict: ConflictPolicy::Overwrite,
+                ..Default::default()
+            },
+            &cancel,
+        )
+        .unwrap() else {
+            panic!("expected conversion");
+        };
+        let now_date = fs::metadata(&output).unwrap().modified().unwrap();
+        assert!(now_date.duration_since(old).unwrap() > Duration::from_secs(86_400));
+
+        let ConvertOutcome::Converted { output, .. } = convert_one(
+            &t,
+            &ConvertSettings {
+                on_conflict: ConflictPolicy::Overwrite,
+                keep_source_date: true,
+                ..Default::default()
+            },
+            &cancel,
+        )
+        .unwrap() else {
+            panic!("expected conversion");
+        };
+        let kept = fs::metadata(&output).unwrap().modified().unwrap();
+        assert_eq!(kept, old);
     }
 
     #[test]
