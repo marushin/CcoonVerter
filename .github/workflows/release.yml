@@ -3,6 +3,10 @@ name: Release
 # Push a tag `vX.Y.Z` whose version equals [workspace.package] version in
 # Cargo.toml. Builds the Windows exe and the macOS universal DMG and publishes
 # a GitHub release whose body is the `## vX.Y.Z` section of CHANGELOG.md.
+#
+# Code signing and notarization run only when ALL of their repository secrets
+# exist (docs/SIGNING.md). Without secrets the steps are skipped and the build
+# is the same as before: an unsigned Windows exe and an ad-hoc signed macOS app.
 
 on:
   push:
@@ -41,12 +45,29 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      # 'true' only when every Azure Trusted Signing secret is configured.
+      WINDOWS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_CERT_PROFILE != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release -p ccoonverter
+      # Azure Trusted Signing, now published by Microsoft as "Artifact Signing".
+      - name: Sign with Azure Trusted Signing
+        if: env.WINDOWS_SIGNING == 'true'
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\target\release\CcooNverter.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
       - name: Rename
         shell: bash
         run: |
@@ -66,6 +87,8 @@ jobs:
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      # 'true' only when every Apple secret is configured.
+      MAC_SIGNING: ${{ secrets.APPLE_CERT_P12_BASE64 != '' && secrets.APPLE_CERT_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -81,29 +104,61 @@ jobs:
           file dist/macos/CcooNverter.app/Contents/MacOS/CcooNverter
           codesign --verify --verbose dist/macos/CcooNverter.app
 
-      # --- Notarization (disabled until an Apple Developer ID is available) ---
-      # Required repository secrets: APPLE_CERT_P12_BASE64, APPLE_CERT_PASSWORD,
-      # APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD. See docs/03_MAC_BUILD_PLAN.md §5.
-      # Import the certificate into a temporary keychain first, e.g.:
-      #   echo "$APPLE_CERT_P12_BASE64" | base64 --decode > cert.p12
-      #   security create-keychain -p "" build.keychain
-      #   security import cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
-      #   security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
-      #   security list-keychains -s build.keychain; security unlock-keychain -p "" build.keychain
-      # Then sign, rebuild the DMG, notarize and staple:
-      # - name: Sign and notarize
-      #   env:
-      #     APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
-      #     APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-      #     APPLE_ID: ${{ secrets.APPLE_ID }}
-      #     TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      #     APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-      #   run: |
-      #     codesign --force --deep --options runtime --timestamp --sign "Developer ID Application: NAME (TEAMID)" dist/macos/CcooNverter.app
-      #     # (re-create the DMG from the signed app here)
-      #     xcrun notarytool submit "dist/macos/CcooNverter_v${VERSION}_macos_universal.dmg" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD" --wait
-      #     xcrun stapler staple dist/macos/CcooNverter.app
-      #     xcrun stapler staple "dist/macos/CcooNverter_v${VERSION}_macos_universal.dmg"
+      # Developer ID signing and notarization. Only with all five Apple
+      # secrets; see docs/SIGNING.md.
+      - name: Import Developer ID certificate
+        if: env.MAC_SIGNING == 'true'
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          printf '%s' "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity in APPLE_CERT_P12_BASE64"
+            exit 1
+          fi
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+      - name: Sign, notarize and staple
+        if: env.MAC_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APP="dist/macos/CcooNverter.app"
+          DMG="dist/macos/CcooNverter_v${VERSION}_macos_universal.dmg"
+          codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          # The DMG from the build script holds the ad-hoc signed app: rebuild it.
+          STAGE="$(mktemp -d)"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          rm -f "$DMG"
+          hdiutil create -volname "CcooNverter $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$APP"
+          xcrun stapler staple "$DMG"
+          spctl --assess --type execute --verbose=2 "$APP"
+      - name: Remove signing keychain
+        if: always() && env.MAC_SIGNING == 'true'
+        run: |
+          if [ -n "${KEYCHAIN:-}" ]; then
+            security delete-keychain "$KEYCHAIN" || true
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
