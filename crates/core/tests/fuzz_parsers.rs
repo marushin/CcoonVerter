@@ -8,9 +8,11 @@
 //! `tests/samples/` when present.
 //!
 //! A finding is a panic, an iteration that allocates far more than its input
-//! justifies, or one that runs too long. rawler's own parsers are exercised
-//! too but reported separately: they are third-party code and every batch
-//! worker already contains their panics.
+//! justifies, or one that runs too long, on our own code paths. Set
+//! `CCOON_FUZZ_RAWLER=1` to also exercise rawler's parsers: their panics are
+//! reported separately, but rawler can still ask for an impossible allocation
+//! on some damaged files, which aborts the whole process (see
+//! `docs/V0.12_REPORT.md`), so that target is off by default.
 //!
 //! Long run (release build, all cores):
 //! `CCOON_FUZZ_SECS=600 cargo test --release -p ccoonverter-core --test fuzz_parsers
@@ -504,10 +506,15 @@ fn run_one(seed: u64, n: u64, seeds: &[Vec<u8>], info: &ExifInfo, report: &Repor
             elapsed.as_millis(),
         ));
     }
-    if panic::catch_unwind(AssertUnwindSafe(|| target_rawler(&input))).is_err() {
+    if include_rawler() && panic::catch_unwind(AssertUnwindSafe(|| target_rawler(&input))).is_err()
+    {
         let key = LAST_PANIC.with(|p| p.borrow().clone());
         Report::note_panic(&report.rawler_panics, key, n);
     }
+}
+
+fn include_rawler() -> bool {
+    std::env::var_os("CCOON_FUZZ_RAWLER").is_some_and(|v| v == "1")
 }
 
 fn run(duration: Option<Duration>, iterations: u64, seed: u64, threads: usize) -> Report {
@@ -622,7 +629,9 @@ fn fuzz_long() {
         let input = input_for(seed, n, &seeds);
         println!("replaying iteration {n}: {} bytes", input.len());
         target_own(&input, &full_info());
-        target_rawler(&input);
+        if include_rawler() {
+            target_rawler(&input);
+        }
         return;
     }
     let secs = var("CCOON_FUZZ_SECS").unwrap_or(60);

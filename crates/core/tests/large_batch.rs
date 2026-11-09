@@ -76,7 +76,8 @@ fn run(
                 std::thread::sleep(Duration::from_millis(20));
             }
         });
-        let reader = scope.spawn(|| {
+        let finished_flag = &finished;
+        let reader = scope.spawn(move || {
             let mut received = 0usize;
             let mut deepest = 0usize;
             let mut last_done = 0usize;
@@ -85,7 +86,7 @@ fn run(
                     Some(d) => std::thread::sleep(d),
                     // A stalled UI thread: nothing is read until the batch ends.
                     None => {
-                        while !finished.load(Ordering::Relaxed) {
+                        while !finished_flag.load(Ordering::Relaxed) {
                             std::thread::sleep(Duration::from_millis(20));
                         }
                     }

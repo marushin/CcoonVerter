@@ -9,10 +9,12 @@
 //! the decoder sees them.
 //!
 //! Its TIFF reader allocates `count * element size` of an IFD entry before
-//! checking the file is that long, up to 32 GiB for one damaged entry, which
-//! aborts on a machine that cannot provide it. The directories rawler always
-//! reads (IFD chain, SubIFDs, Exif, GPS) are checked here for such entries;
-//! maker notes read later through other offsets are not.
+//! checking the file is that long, up to 32 GiB for one damaged entry, and
+//! allocates the image from the width and height tags before reading any
+//! pixels. Either aborts on a machine that cannot provide the memory. The
+//! directories rawler always reads (IFD chain, SubIFDs, Exif, GPS, ICC) are
+//! checked here for such claims; maker notes and dimensions from other
+//! containers are not.
 //!
 //! Both found by `crates/core/tests/fuzz_parsers.rs`.
 
@@ -89,11 +91,26 @@ fn boxes_ok(buf: &[u8], start: usize, end: usize, depth: u32) -> bool {
             return false;
         }
         if size < header as u64 {
-            // Inside a container this is the stall; at the top rawler has
-            // its own check.
-            return depth == 0;
+            if depth > 0 {
+                return false; // the stall inside a container
+            }
+            // At the top rawler refuses size 0 but follows other short
+            // sizes, so keep walking the way it does.
+            if size == 0 {
+                return true;
+            }
+            pos = pos.saturating_add(size as usize);
+            continue;
         }
         let child_end = pos.saturating_add(size as usize).min(end);
+        // Canon metadata boxes are TIFF files rawler parses in place.
+        if matches!(&typ, b"CMT1" | b"CMT2" | b"CMT3" | b"CMT4") {
+            if let Some(blob) = buf.get(pos + header..child_end) {
+                if !tiff_entries_ok(blob) {
+                    return false;
+                }
+            }
+        }
         if depth < MAX_DEPTH {
             if let Some(skip) = child_offset(&typ, uuid) {
                 if !boxes_ok(buf, pos + header + skip, child_end, depth + 1) {
@@ -114,6 +131,11 @@ pub fn bmff_structure_ok(buf: &[u8]) -> bool {
 /// An entry may claim up to this many bytes even if the file is smaller:
 /// harmless to allocate, and damaged entries of that size are left to rawler.
 const MAX_HARMLESS_ENTRY: u64 = 1 << 30;
+/// A sensor buffer may claim this much even for a small file (compressed
+/// RAW expands a lot); beyond it the size must be plausible for the file.
+const MAX_HARMLESS_IMAGE: u64 = 4 << 30;
+/// Largest decompressed size of a credible image, as a multiple of the file.
+const MAX_IMAGE_EXPANSION: u64 = 32;
 /// rawler's own limits.
 const MAX_IFD_ENTRIES: usize = 4096;
 const MAX_IFDS: usize = 256;
@@ -145,6 +167,14 @@ impl Tiff<'_> {
 
     /// Values of an offset-holding entry (SubIFDs and friends).
     fn offsets(&self, entry: usize, typ: u16, count: usize) -> Vec<usize> {
+        // rawler also takes the stored offset of an UNDEFINED entry.
+        if typ == 7 && count > 4 {
+            return self
+                .u32(entry + 8)
+                .map(|v| v as usize)
+                .into_iter()
+                .collect();
+        }
         if count == 0 || !matches!(typ, 3 | 4 | 13) || count > 64 {
             return Vec::new();
         }
@@ -181,6 +211,7 @@ impl Tiff<'_> {
         let n = usize::from(n).min(MAX_IFD_ENTRIES);
         let limit = (self.buf.len() as u64).max(MAX_HARMLESS_ENTRY);
         let mut children = Vec::new();
+        let (mut width, mut height, mut samples) = (None, None, 1u64);
         for i in 0..n {
             let e = ifd + 2 + i * 12;
             let (Some(tag), Some(typ), Some(count)) =
@@ -198,8 +229,32 @@ impl Tiff<'_> {
             if u64::from(count) * size > limit {
                 return false;
             }
-            if matches!(tag, 330 | 0x8769 | 0x8825) {
+            // SubIFDs, Exif, GPS and (in rawler's list) the ICC profile tag.
+            if matches!(tag, 330 | 0x8769 | 0x8825 | 0x8773) {
                 children.extend(self.offsets(e, typ, count as usize));
+            }
+            let value = || match typ {
+                3 => self.u16(e + 8).map(u64::from),
+                4 => self.u32(e + 8).map(u64::from),
+                _ => None,
+            };
+            match tag {
+                0x0100 => width = value(),
+                0x0101 => height = value(),
+                0x0115 => samples = value().unwrap_or(1).max(1),
+                _ => {}
+            }
+        }
+        if let (Some(w), Some(h)) = (width, height) {
+            let bytes = w
+                .saturating_mul(h)
+                .saturating_mul(samples)
+                .saturating_mul(2);
+            let credible = (self.buf.len() as u64)
+                .saturating_mul(MAX_IMAGE_EXPANSION)
+                .max(MAX_HARMLESS_IMAGE);
+            if bytes > credible {
+                return false;
             }
         }
         // The next IFD of the chain, then the sub-directories.
@@ -282,6 +337,32 @@ mod tests {
     }
 
     #[test]
+    fn short_top_level_box_does_not_hide_a_later_stall() {
+        let mut stall = 0u32.to_be_bytes().to_vec();
+        stall.extend_from_slice(b"abcd");
+        // A size of 5 moves on five bytes, as rawler does, so the moov that
+        // starts inside the short box's header must still be seen.
+        let mut file = 5u32.to_be_bytes().to_vec();
+        file.push(b'a');
+        file.extend(boxed(b"moov", &stall));
+        assert!(!bmff_structure_ok(&file));
+    }
+
+    #[test]
+    fn canon_metadata_tiff_is_checked() {
+        let bad = tiff_with_entry(0x0100, 12, 0x8000_0000);
+        let cmt = boxed(b"CMT2", &bad);
+        let mut body = [
+            0x85u8, 0xC0, 0xB6, 0x87, 0x82, 0x0F, 0x11, 0xE0, 0x81, 0x11, 0xF4, 0xCE, 0x46, 0x2B,
+            0x6A, 0x48,
+        ]
+        .to_vec();
+        body.extend(cmt);
+        let moov = boxed(b"moov", &boxed(b"uuid", &body));
+        assert!(!bmff_structure_ok(&moov));
+    }
+
+    #[test]
     fn overflowing_large_size_is_refused() {
         let mut body = 1u32.to_be_bytes().to_vec();
         body.extend_from_slice(b"abcd");
@@ -317,6 +398,24 @@ mod tests {
         assert!(tiff_entries_ok(&tiff_with_entry(0x0100, 1, 1 << 24)));
         // Unknown type: rawler reads no array for it.
         assert!(tiff_entries_ok(&tiff_with_entry(0x0100, 99, u32::MAX)));
+    }
+
+    /// Dimensions that would make rawler allocate hundreds of GiB for a tiny file.
+    #[test]
+    fn impossible_image_size_is_refused() {
+        let mut v = b"II*\0\x08\0\0\0\x02\0".to_vec();
+        for (tag, value) in [(0x0100u16, 60_000u32), (0x0101, 60_000)] {
+            v.extend_from_slice(&tag.to_le_bytes());
+            v.extend_from_slice(&4u16.to_le_bytes());
+            v.extend_from_slice(&1u32.to_le_bytes());
+            v.extend_from_slice(&value.to_le_bytes());
+        }
+        v.extend_from_slice(&[0; 4]);
+        assert!(!tiff_entries_ok(&v));
+        // A normal sensor size is left alone.
+        v[18..22].copy_from_slice(&6000u32.to_le_bytes());
+        v[30..34].copy_from_slice(&4000u32.to_le_bytes());
+        assert!(tiff_entries_ok(&v));
     }
 
     #[test]
