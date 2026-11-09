@@ -28,6 +28,7 @@ rfd.workspace = true
 open.workspace = true
 image.workspace = true
 log.workspace = true
+sys-locale.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Dark title bar via DwmSetWindowAttribute (see src/titlebar.rs).

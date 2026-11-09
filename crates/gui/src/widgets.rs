@@ -18,6 +18,11 @@ fn pointer_cursor(ui: &Ui, resp: &Response) {
     }
 }
 
+/// Tooltip shown whether the widget is enabled or disabled.
+pub fn tip(resp: Response, text: &str) -> Response {
+    resp.on_hover_text(text).on_disabled_hover_text(text)
+}
+
 /// Flat gold button with dark text (BROWSE, SAVE, "Let's Get Cooking!", DOWNLOAD).
 pub fn gold_button(ui: &mut Ui, text: &str, size: Vec2, font: FontId) -> Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -225,7 +230,7 @@ impl Columns {
     pub const SETTINGS: Columns = Columns {
         label: 170.0,
         value: 64.0,
-        row_height: 25.0,
+        row_height: 24.0,
     };
 
     /// One grid row: `label` cell, an expanding control cell (receives its

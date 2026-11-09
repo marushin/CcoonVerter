@@ -17,6 +17,8 @@ use ccoonverter_core::config;
 use ccoonverter_core::job::{self, BatchSummary, FileStatus, Progress};
 use ccoonverter_core::{ConflictPolicy, ConvertSettings, FileTask, PictureStyle, WhiteBalance};
 
+use crate::i18n::{t, tf, Key};
+
 // ---------------------------------------------------------------------------
 // UI settings
 // ---------------------------------------------------------------------------
@@ -41,6 +43,7 @@ pub struct UiSettings {
     pub tone_curve: bool,
     /// Output sharpening (no slider in the UI; kept in presets and settings).
     pub sharpen: f32,
+    pub keep_source_date: bool,
 }
 
 impl Default for UiSettings {
@@ -97,6 +100,7 @@ impl UiSettings {
             exposure_ev: s.exposure_ev,
             tone_curve: s.tone_curve,
             sharpen: s.sharpen,
+            keep_source_date: s.keep_source_date,
         }
     }
 
@@ -136,6 +140,7 @@ impl UiSettings {
                 .clamp(config::MIN_EXPOSURE_EV, config::MAX_EXPOSURE_EV),
             tone_curve: self.tone_curve,
             sharpen: self.sharpen.clamp(config::MIN_SHARPEN, config::MAX_SHARPEN),
+            keep_source_date: self.keep_source_date,
         }
     }
 
@@ -163,19 +168,45 @@ impl UiSettings {
     }
 }
 
-/// Labels of the conflict policy combo, in display order.
-pub const CONFLICT_CHOICES: [(ConflictPolicy, &str); 3] = [
-    (ConflictPolicy::Suffix, "Add suffix"),
-    (ConflictPolicy::Skip, "Skip"),
-    (ConflictPolicy::Overwrite, "Overwrite"),
+/// Label keys of the conflict policy combo, in display order.
+pub const CONFLICT_CHOICES: [(ConflictPolicy, Key); 3] = [
+    (ConflictPolicy::Suffix, Key::ConflictSuffix),
+    (ConflictPolicy::Skip, Key::ConflictSkip),
+    (ConflictPolicy::Overwrite, Key::ConflictOverwrite),
 ];
 
 pub fn conflict_label(p: ConflictPolicy) -> &'static str {
     CONFLICT_CHOICES
         .iter()
         .find(|(c, _)| *c == p)
-        .map(|(_, l)| *l)
-        .unwrap_or("Add suffix")
+        .map(|(_, l)| t(*l))
+        .unwrap_or_else(|| t(Key::ConflictSuffix))
+}
+
+/// Display name of a white balance mode (the JSON name stays English).
+pub fn wb_name(wb: WhiteBalance) -> Key {
+    match wb {
+        WhiteBalance::CameraDefault => Key::WbCameraDefault,
+        WhiteBalance::Auto => Key::WbAuto,
+    }
+}
+
+/// Display name of a picture style (the JSON name stays English).
+pub fn style_name(s: PictureStyle) -> Key {
+    match s {
+        PictureStyle::Standard => Key::StyleStandard,
+        PictureStyle::Portrait => Key::StylePortrait,
+        PictureStyle::Landscape => Key::StyleLandscape,
+        PictureStyle::Neutral => Key::StyleNeutral,
+        PictureStyle::Vivid => Key::StyleVivid,
+        PictureStyle::Monochrome => Key::StyleMonochrome,
+        PictureStyle::Sepia => Key::StyleSepia,
+        PictureStyle::Cinematic => Key::StyleCinematic,
+        PictureStyle::Hdr => Key::StyleHdr,
+        PictureStyle::Soft => Key::StyleSoft,
+        PictureStyle::Dramatic => Key::StyleDramatic,
+        PictureStyle::BlackAndWhite => Key::StyleBlackAndWhite,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -214,12 +245,23 @@ pub enum PrepareError {
 }
 
 impl PrepareError {
-    /// (title, message) for the native message box, matching Python's texts.
-    pub fn dialog(&self) -> (&'static str, String) {
+    /// (kind, title, message) for the native message box; English matches Python.
+    pub fn dialog(&self) -> (MessageKind, String, String) {
+        let error = || (MessageKind::Error, t(Key::TitleError).to_string());
         match self {
-            PrepareError::InvalidSource => ("Error", "Please select a valid source folder.".into()),
-            PrepareError::NoFiles => ("Info", "No RAW files found in the selected folder.".into()),
-            PrepareError::Scan(e) => ("Error", format!("File system error: {e}")),
+            PrepareError::InvalidSource => {
+                let (kind, title) = error();
+                (kind, title, t(Key::InvalidSourceFolder).to_string())
+            }
+            PrepareError::NoFiles => (
+                MessageKind::Info,
+                t(Key::TitleInfo).to_string(),
+                t(Key::NoRawFound).to_string(),
+            ),
+            PrepareError::Scan(e) => {
+                let (kind, title) = error();
+                (kind, title, tf(Key::FileSystemError, &[e]))
+            }
         }
     }
 }
@@ -317,12 +359,8 @@ pub fn plan_drop(paths: &[PathBuf], is_dir: impl Fn(&Path) -> bool) -> DropPlan 
     let (dirs, files): (Vec<&PathBuf>, Vec<&PathBuf>) = paths.iter().partition(|p| is_dir(p));
     if let Some(folder) = dirs.first() {
         let ignored = dirs.len() - 1 + files.len();
-        let notice = (ignored > 0).then(|| {
-            format!(
-                "Using folder {}; ignored {ignored} other dropped item(s).",
-                folder.display()
-            )
-        });
+        let notice =
+            (ignored > 0).then(|| tf(Key::DropFolderNotice, &[&folder.display(), &ignored]));
         return DropPlan::SetSource {
             folder: (*folder).clone(),
             notice,
@@ -336,9 +374,9 @@ pub fn plan_drop(paths: &[PathBuf], is_dir: impl Fn(&Path) -> bool) -> DropPlan 
     let ignored = files.len() - raws.len();
     if raws.is_empty() {
         return DropPlan::Ignored {
-            notice: format!(
-                "No RAW files in the drop ({ignored} file(s) ignored). Supported: {}.",
-                config::SUPPORTED_EXTENSIONS.join(", ")
+            notice: tf(
+                Key::DropNoRaw,
+                &[&ignored, &config::SUPPORTED_EXTENSIONS.join(", ")],
             ),
         };
     }
@@ -346,10 +384,10 @@ pub fn plan_drop(paths: &[PathBuf], is_dir: impl Fn(&Path) -> bool) -> DropPlan 
     raws.dedup();
     let Some(root) = common_parent(&raws) else {
         return DropPlan::Ignored {
-            notice: "Dropped files must be on the same drive.".into(),
+            notice: t(Key::DropSameDrive).to_string(),
         };
     };
-    let notice = (ignored > 0).then(|| format!("Ignored {ignored} non-RAW file(s)."));
+    let notice = (ignored > 0).then(|| tf(Key::DropIgnoredFiles, &[&ignored]));
     DropPlan::Files {
         selection: DropSelection { root, files: raws },
         notice,
@@ -465,8 +503,6 @@ impl RunningBatch {
 // Progress panel state and texts
 // ---------------------------------------------------------------------------
 
-pub const READY: &str = "READY";
-
 /// Texts of the progress panel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProgressView {
@@ -478,7 +514,7 @@ pub struct ProgressView {
 impl Default for ProgressView {
     fn default() -> Self {
         Self {
-            status: READY.into(),
+            status: t(Key::Ready).to_string(),
             eta: format_eta(None),
             fraction: 0.0,
         }
@@ -499,7 +535,7 @@ impl ProgressView {
         let fraction = p.done as f32 / p.total as f32;
         let pct = (fraction * 100.0) as u32;
         let name = progress_file_name(p);
-        self.status = format!("Processing ({}/{}): {} ({}%)", p.done, p.total, name, pct);
+        self.status = tf(Key::ProgressLine, &[&p.done, &p.total, &name, &pct]);
         let eta = if p.done >= p.total {
             Some(Duration::ZERO)
         } else {
@@ -512,7 +548,7 @@ impl ProgressView {
     /// Status shown right after the batch starts, before the first file finishes.
     pub fn starting(total: usize) -> Self {
         Self {
-            status: format!("Processing (0/{total}): ... (0%)"),
+            status: tf(Key::ProgressStarting, &[&total]),
             eta: format_eta(None),
             fraction: 0.0,
         }
@@ -534,7 +570,7 @@ fn progress_file_name(p: &Progress) -> String {
             .as_deref()
             .map(file_name)
             .unwrap_or_else(|| file_name(&p.last.source)),
-        FileStatus::Failed => "Error".into(),
+        FileStatus::Failed => t(Key::ProgressError).to_string(),
         FileStatus::Cancelled => file_name(&p.last.source),
     }
 }
@@ -542,10 +578,11 @@ fn progress_file_name(p: &Progress) -> String {
 /// "ETA: --:--" when unknown, else "ETA: HH:MM:SS".
 pub fn format_eta(eta: Option<Duration>) -> String {
     match eta {
-        None => "ETA: --:--".into(),
+        None => t(Key::EtaUnknown).to_string(),
         Some(d) => {
             let s = d.as_secs();
-            format!("ETA: {:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+            let hms = format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60);
+            tf(Key::EtaValue, &[&hms])
         }
     }
 }
@@ -553,10 +590,10 @@ pub fn format_eta(eta: Option<Duration>) -> String {
 /// Python `_format_time`: "12.3s" below a minute, else "2m 30s".
 pub fn format_elapsed(seconds: f64) -> String {
     if seconds < 60.0 {
-        format!("{seconds:.1}s")
+        tf(Key::ElapsedSeconds, &[&format!("{seconds:.1}")])
     } else {
         let total = seconds as u64;
-        format!("{}m {}s", total / 60, total % 60)
+        tf(Key::ElapsedMinutes, &[&(total / 60), &(total % 60)])
     }
 }
 
@@ -588,44 +625,47 @@ pub fn completion_message(
     match outcome {
         BatchOutcome::Error(e) => CompletionMessage {
             kind: MessageKind::Error,
-            title: "Error".into(),
-            body: format!("An unexpected error occurred:\n{e}"),
+            title: t(Key::TitleError).to_string(),
+            body: tf(Key::UnexpectedError, &[e]),
             offer_open: false,
         },
         BatchOutcome::Finished(s) if s.was_cancelled => CompletionMessage {
             kind: MessageKind::Info,
-            title: "Cancelled".into(),
-            body: "Conversion cancelled.".into(),
+            title: t(Key::TitleCancelled).to_string(),
+            body: t(Key::ConversionCancelled).to_string(),
             offer_open: s.converted > 0,
         },
         BatchOutcome::Finished(s) => {
             let elapsed = format_elapsed(s.elapsed_secs);
             let skipped = if s.skipped > 0 {
-                format!("Skipped (output exists): {}\n", s.skipped)
+                tf(Key::SkippedLine, &[&s.skipped])
             } else {
                 String::new()
             };
             if s.failed == 0 {
                 CompletionMessage {
                     kind: MessageKind::Info,
-                    title: "Success".into(),
-                    body: format!(
-                        "Successfully converted {} file(s).\n{skipped}Time taken: {elapsed}\nSaved to: {}",
-                        s.converted,
-                        output_dir.display()
+                    title: t(Key::TitleSuccess).to_string(),
+                    body: tf(
+                        Key::SuccessBody,
+                        &[&s.converted, &skipped, &elapsed, &output_dir.display()],
                     ),
                     offer_open: true,
                 }
             } else {
                 CompletionMessage {
                     kind: MessageKind::Warning,
-                    title: "Completed with Errors".into(),
-                    body: format!(
-                        "Conversion complete with some errors:\nSuccessful: {}\nFailed: {}\n{skipped}Time taken: {elapsed}\n\nCheck {} for details.\nSaved to: {}",
-                        s.converted,
-                        s.failed,
-                        log_file.display(),
-                        output_dir.display()
+                    title: t(Key::TitleCompletedWithErrors).to_string(),
+                    body: tf(
+                        Key::CompletedWithErrorsBody,
+                        &[
+                            &s.converted,
+                            &s.failed,
+                            &skipped,
+                            &elapsed,
+                            &log_file.display(),
+                            &output_dir.display(),
+                        ],
                     ),
                     offer_open: s.converted > 0,
                 }
@@ -658,6 +698,7 @@ mod tests {
             exposure_ev: -1.25,
             tone_curve: false,
             sharpen: 0.8,
+            keep_source_date: true,
         };
         let ui = UiSettings::from_convert(&core);
         assert_eq!(ui.resize_text, "2000");
@@ -713,6 +754,7 @@ mod tests {
             exposure_ev: 2.0,
             tone_curve: false,
             sharpen: 0.0,
+            keep_source_date: true,
         };
         ui.reset_raw_adjustments();
         assert_eq!(ui.exposure_ev, 0.0);
@@ -727,6 +769,7 @@ mod tests {
         assert_eq!(ui.quality, 50.0);
         assert!(ui.preserve_exif && ui.extract_embedded);
         assert_eq!(ui.on_conflict, ConflictPolicy::Overwrite);
+        assert!(ui.keep_source_date, "not a RAW adjustment");
     }
 
     #[test]
@@ -1021,12 +1064,13 @@ mod tests {
         assert_eq!(
             PrepareError::NoFiles.dialog(),
             (
-                "Info",
+                MessageKind::Info,
+                "Info".to_string(),
                 "No RAW files found in the selected folder.".to_string()
             )
         );
         assert_eq!(
-            PrepareError::InvalidSource.dialog().1,
+            PrepareError::InvalidSource.dialog().2,
             "Please select a valid source folder."
         );
     }

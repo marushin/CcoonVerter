@@ -7,27 +7,27 @@ use std::time::{Duration, Instant};
 use ccoonverter_core::config;
 use ccoonverter_core::paths::AppPaths;
 use ccoonverter_core::presets::PresetStore;
+use ccoonverter_core::settings::UiLanguage;
 use ccoonverter_core::update::{self, ReleaseInfo};
 use ccoonverter_core::{AppSettings, PictureStyle, WhiteBalance};
 use eframe::egui::{
-    self, vec2, Align, Align2, Color32, ComboBox, Frame, Id, Key, Label, LayerId, Layout, Margin,
-    Order, RichText, ScrollArea, Stroke, StrokeKind, Ui, ViewportCommand,
+    self, vec2, Align, Align2, Color32, ComboBox, Frame, Id, Label, LayerId, Layout, Margin, Order,
+    RichText, ScrollArea, Stroke, StrokeKind, Ui, ViewportCommand,
 };
 
 use crate::controller::{
-    self, completion_message, conflict_label, plan_drop, prepare_batch, prepare_selection,
-    BatchOutcome, DropPlan, DropSelection, ProgressView, RunningBatch, UiSettings,
+    completion_message, conflict_label, plan_drop, prepare_batch, prepare_selection, style_name,
+    wb_name, BatchOutcome, DropPlan, DropSelection, ProgressView, RunningBatch, UiSettings,
     CONFLICT_CHOICES,
 };
 use crate::dialogs;
+use crate::i18n::{self, t, tf, Key};
 use crate::preview::PreviewWorker;
 use crate::preview_panel::PreviewPanel;
 use crate::theme::{
     self, ACCENT, BG, BORDER, DANGER, PAD_LARGE, PAD_MEDIUM, PANEL, TEXT, TEXT_DIM,
 };
-use crate::widgets::{self, Columns};
-
-const SELECT_PRESET: &str = "Select Preset...";
+use crate::widgets::{self, tip, Columns};
 
 /// From this window width on, settings and preview sit side by side.
 const WIDE_LAYOUT_WIDTH: f32 = 1040.0;
@@ -60,6 +60,7 @@ pub struct CcooNverterApp {
     output: String,
     settings: UiSettings,
     check_updates: bool,
+    language: UiLanguage,
 
     presets: PresetStore,
     /// Name shown in the preset combo (`None` = "Select Preset...").
@@ -124,6 +125,7 @@ impl CcooNverterApp {
             output,
             settings: UiSettings::from_convert(&app_settings.convert),
             check_updates: app_settings.check_updates,
+            language: app_settings.language,
             presets,
             selected_preset: None,
             preset_name_input: None,
@@ -156,6 +158,7 @@ impl CcooNverterApp {
             last_source: non_empty(&self.source),
             check_updates: self.check_updates,
             preview_open: self.preview.open,
+            language: self.language,
         }
     }
 
@@ -175,8 +178,8 @@ impl CcooNverterApp {
                 log::error!("Failed to save presets to {}: {e}", path.display());
                 dialogs::error(
                     Some(frame),
-                    "Error",
-                    &format!("Could not save presets:\n{e}"),
+                    t(Key::TitleError),
+                    &tf(Key::SavePresetFailed, &[&e]),
                 );
                 false
             }
@@ -226,7 +229,7 @@ impl CcooNverterApp {
         }
         let msg = completion_message(&outcome, output_dir, &self.paths.log_file());
         if msg.offer_open {
-            let body = format!("{}\n\nOpen output folder?", msg.body);
+            let body = tf(Key::OpenOutputFolderQuestion, &[&msg.body]);
             if dialogs::ask_yes_no(Some(frame), msg.kind, &msg.title, &body) {
                 if let Err(e) = open::that_detached(output_dir) {
                     log::error!("Could not open {}: {e}", output_dir.display());
@@ -258,11 +261,7 @@ impl CcooNverterApp {
         }
         if self.is_converting() && !self.close_confirmed {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            if dialogs::confirm(
-                Some(frame),
-                "Quit",
-                "A conversion is still running.\nCancel it and quit?",
-            ) {
+            if dialogs::confirm(Some(frame), t(Key::TitleQuit), t(Key::QuitWhileConverting)) {
                 if let Some(job) = &self.job {
                     job.cancel();
                 }
@@ -304,13 +303,13 @@ impl CcooNverterApp {
     fn run_action(&mut self, action: Action, ctx: &egui::Context, frame: &eframe::Frame) {
         match action {
             Action::BrowseSource => {
-                if let Some(p) = pick_folder(&self.source) {
+                if let Some(p) = pick_folder(&self.source, t(Key::BrowseSourceTitle)) {
                     log::info!("Selected folder: {}", p.display());
                     self.source = p.to_string_lossy().into_owned();
                 }
             }
             Action::BrowseOutput => {
-                if let Some(p) = pick_folder(&self.output) {
+                if let Some(p) = pick_folder(&self.output, t(Key::BrowseOutputTitle)) {
                     log::info!("Selected output folder: {}", p.display());
                     self.output = p.to_string_lossy().into_owned();
                 }
@@ -321,8 +320,8 @@ impl CcooNverterApp {
                     if !job.is_cancel_requested()
                         && dialogs::confirm(
                             Some(frame),
-                            "Cancel",
-                            "Are you sure you want to cancel the conversion?",
+                            t(Key::TitleCancel),
+                            t(Key::ConfirmCancelConversion),
                         )
                     {
                         if let Some(job) = &self.job {
@@ -330,18 +329,14 @@ impl CcooNverterApp {
                         }
                         log::info!("Cancellation requested by user");
                         self.progress.reset();
-                        self.progress.status = "Cancelling...".into();
+                        self.progress.status = t(Key::Cancelling).to_string();
                     }
                 }
             }
             Action::ResetAdjustments => {
                 self.settings.reset_raw_adjustments();
                 log::info!("RAW adjustments reset to defaults");
-                dialogs::info(
-                    Some(frame),
-                    "Reset",
-                    "RAW adjustments have been reset to defaults.",
-                );
+                dialogs::info(Some(frame), t(Key::TitleReset), t(Key::ResetDone));
             }
             Action::OpenSavePreset => self.preset_name_input = Some(String::new()),
             Action::SavePreset(name) => {
@@ -355,20 +350,31 @@ impl CcooNverterApp {
                 if self.save_presets(frame) {
                     log::info!("Saved preset '{name}'");
                     self.selected_preset = Some(name.clone());
-                    dialogs::info(Some(frame), "Success", &format!("Preset '{name}' saved."));
+                    dialogs::info(
+                        Some(frame),
+                        t(Key::TitleSuccess),
+                        &tf(Key::PresetSaved, &[&name]),
+                    );
                 }
             }
             Action::DeletePreset => {
                 let Some(name) = self.selected_preset.clone() else {
                     return;
                 };
-                if dialogs::confirm(Some(frame), "Confirm", &format!("Delete preset '{name}'?"))
-                    && self.presets.remove(&name)
+                if dialogs::confirm(
+                    Some(frame),
+                    t(Key::TitleConfirm),
+                    &tf(Key::ConfirmDeletePreset, &[&name]),
+                ) && self.presets.remove(&name)
                 {
                     self.selected_preset = None;
                     if self.save_presets(frame) {
                         log::info!("Deleted preset '{name}'");
-                        dialogs::info(Some(frame), "Success", &format!("Preset '{name}' deleted."));
+                        dialogs::info(
+                            Some(frame),
+                            t(Key::TitleSuccess),
+                            &tf(Key::PresetDeleted, &[&name]),
+                        );
                     }
                 }
             }
@@ -398,13 +404,8 @@ impl CcooNverterApp {
             None => match prepare_batch(&self.source, &self.output) {
                 Ok(b) => b,
                 Err(e) => {
-                    let (title, msg) = e.dialog();
-                    let kind = if title == "Info" {
-                        controller::MessageKind::Info
-                    } else {
-                        controller::MessageKind::Error
-                    };
-                    dialogs::show(Some(frame), kind, title, &msg);
+                    let (kind, title, msg) = e.dialog();
+                    dialogs::show(Some(frame), kind, &title, &msg);
                     return;
                 }
             },
@@ -420,8 +421,8 @@ impl CcooNverterApp {
                 log::error!("Could not start worker thread: {e}");
                 dialogs::error(
                     Some(frame),
-                    "Error",
-                    &format!("Could not start conversion:\n{e}"),
+                    t(Key::TitleError),
+                    &tf(Key::CouldNotStart, &[&e]),
                 );
             }
         }
@@ -446,7 +447,7 @@ impl CcooNverterApp {
             return;
         }
         if self.is_converting() {
-            self.set_notice("Conversion running: the drop was ignored.".to_string());
+            self.set_notice(t(Key::DropBusy).to_string());
             return;
         }
         log::info!("Dropped {} item(s)", dropped.len());
@@ -466,12 +467,7 @@ impl CcooNverterApp {
                     selection.root.display()
                 );
                 self.source = selection.root.to_string_lossy().into_owned();
-                let msg = notice.unwrap_or_else(|| {
-                    format!(
-                        "{} RAW file(s) ready. Press the button to convert just these.",
-                        selection.files.len()
-                    )
-                });
+                let msg = notice.unwrap_or_else(|| tf(Key::DropReady, &[&selection.files.len()]));
                 self.selection = Some(selection);
                 self.set_notice(msg);
             }
@@ -501,14 +497,14 @@ impl CcooNverterApp {
             painter.text(
                 rect.center() - vec2(0.0, 14.0),
                 Align2::CENTER_CENTER,
-                "Drop a folder or RAW files",
+                t(Key::DropHoverTitle),
                 theme::font_header(),
                 ACCENT,
             );
             painter.text(
                 rect.center() + vec2(0.0, 14.0),
                 Align2::CENTER_CENTER,
-                "A folder sets the source. Files convert just those files.",
+                t(Key::DropHoverHint),
                 theme::font_body(),
                 TEXT,
             );
@@ -571,28 +567,27 @@ impl CcooNverterApp {
     fn draw_paths(&mut self, ui: &mut Ui, actions: &mut Vec<Action>, narrow: bool) {
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new("DIRECTORY PATHS")
+                RichText::new(t(Key::DirectoryPaths))
                     .font(theme::font_body_bold())
                     .color(ACCENT),
             );
             if narrow {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let text = if self.preview.open {
-                        "HIDE PREVIEW"
+                        t(Key::HidePreview)
                     } else {
-                        "SHOW PREVIEW"
+                        t(Key::ShowPreview)
                     };
-                    if widgets::outline_button(
+                    let button = widgets::outline_button(
                         ui,
                         text,
-                        vec2(104.0, 20.0),
+                        vec2(112.0, 20.0),
                         theme::font_small_bold(),
                         ACCENT,
                         Color32::TRANSPARENT,
                         BORDER,
-                    )
-                    .clicked()
-                    {
+                    );
+                    if tip(button, t(Key::TipPreviewToggle)).clicked() {
                         self.preview.open = !self.preview.open;
                     }
                 });
@@ -603,33 +598,41 @@ impl CcooNverterApp {
             value: 84.0,
             row_height: 28.0,
         };
-        let folder_row = |ui: &mut Ui, title: &str, text: &mut String, hint: &str| -> bool {
-            let mut browse = false;
-            cols.row(
-                ui,
-                |ui| {
-                    ui.label(
-                        RichText::new(title)
-                            .font(theme::font_body_bold())
-                            .color(TEXT_DIM),
-                    );
-                },
-                |ui, w| {
-                    widgets::text_field(ui, text, hint, w);
-                },
-                |ui, _| {
-                    browse = widgets::gold_button(
-                        ui,
-                        "BROWSE",
-                        vec2(80.0, 28.0),
-                        theme::font_body_bold(),
-                    )
-                    .clicked();
-                },
-            );
-            browse
-        };
-        if folder_row(ui, "SOURCE FOLDER", &mut self.source, "") {
+        let folder_row =
+            |ui: &mut Ui, title: &str, text: &mut String, hint: &str, tooltip: &str| -> bool {
+                let mut browse = false;
+                cols.row(
+                    ui,
+                    |ui| {
+                        let label = ui.label(
+                            RichText::new(title)
+                                .font(theme::font_body_bold())
+                                .color(TEXT_DIM),
+                        );
+                        tip(label, tooltip);
+                    },
+                    |ui, w| {
+                        tip(widgets::text_field(ui, text, hint, w), tooltip);
+                    },
+                    |ui, _| {
+                        let button = widgets::gold_button(
+                            ui,
+                            t(Key::Browse),
+                            vec2(80.0, 28.0),
+                            theme::font_body_bold(),
+                        );
+                        browse = tip(button, t(Key::TipBrowse)).clicked();
+                    },
+                );
+                browse
+            };
+        if folder_row(
+            ui,
+            t(Key::SourceFolder),
+            &mut self.source,
+            "",
+            t(Key::TipSource),
+        ) {
             actions.push(Action::BrowseSource);
         }
         if let Some(selection) = &self.selection {
@@ -638,13 +641,13 @@ impl CcooNverterApp {
             ui.horizontal(|ui| {
                 ui.add_space(cols.label + ui.spacing().item_spacing.x);
                 ui.label(
-                    RichText::new(format!("{count} dropped file(s) selected"))
+                    RichText::new(tf(Key::DroppedSelected, &[&count]))
                         .font(theme::font_small())
                         .color(ACCENT),
                 );
                 if widgets::outline_button(
                     ui,
-                    "CLEAR",
+                    t(Key::Clear),
                     vec2(48.0, 18.0),
                     theme::font_small_bold(),
                     TEXT_DIM,
@@ -662,9 +665,10 @@ impl CcooNverterApp {
         }
         if folder_row(
             ui,
-            "OUTPUT FOLDER (Optional)",
+            t(Key::OutputFolderOptional),
             &mut self.output,
-            "Leave empty for default subfolder",
+            t(Key::OutputHint),
+            t(Key::TipOutput),
         ) {
             actions.push(Action::BrowseOutput);
         }
@@ -672,21 +676,23 @@ impl CcooNverterApp {
         cols.row(
             ui,
             |ui| {
-                ui.label(
-                    RichText::new("If output exists:")
+                let label = ui.label(
+                    RichText::new(t(Key::IfOutputExists))
                         .font(theme::font_body())
                         .color(TEXT_DIM),
                 );
+                tip(label, t(Key::TipConflict));
             },
             |ui, _w| {
-                ComboBox::from_id_salt("on_conflict")
+                let combo = ComboBox::from_id_salt("on_conflict")
                     .width(150.0)
                     .selected_text(conflict_label(*on_conflict))
                     .show_ui(ui, |ui| {
                         for (p, label) in CONFLICT_CHOICES {
-                            ui.selectable_value(on_conflict, p, label);
+                            ui.selectable_value(on_conflict, p, t(label));
                         }
                     });
+                tip(combo.response, t(Key::TipConflict));
             },
             |_ui, _| {},
         );
@@ -698,43 +704,57 @@ impl CcooNverterApp {
 
         // SETTINGS header + embedded checkbox (right-aligned).
         ui.horizontal(|ui| {
-            widgets::header(ui, "SETTINGS");
+            widgets::header(ui, t(Key::Settings));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                widgets::checkbox(
+                let check = widgets::checkbox(
                     ui,
                     &mut s.extract_embedded,
-                    "Extract Embedded JPEG (Fast)",
+                    t(Key::ExtractEmbedded),
                     theme::font_body_bold(),
                 );
+                tip(check, t(Key::TipEmbedded));
             });
         });
 
-        // EXIF PRESERVATION header + checkbox, note below.
+        // EXIF PRESERVATION header + checkbox, "keep file date" on the same
+        // row; the "not all metadata" note lives in the tooltip (row height is tight).
         ui.horizontal(|ui| {
             widgets::cell(ui, cols.label, cols.row_height, Align::Min, |ui| {
-                widgets::header(ui, "EXIF PRESERVATION");
+                tip(
+                    widgets::header(ui, t(Key::ExifPreservation)),
+                    t(Key::TipExif),
+                );
             });
-            widgets::checkbox(ui, &mut s.preserve_exif, "", theme::font_body_bold());
-            let note_color = if s.preserve_exif { TEXT } else { TEXT_DIM };
-            ui.label(
-                RichText::new("Not all metadata may be copied identically")
-                    .font(theme::font_small())
-                    .color(note_color),
+            let check = widgets::checkbox(ui, &mut s.preserve_exif, "", theme::font_body_bold());
+            tip(check, t(Key::TipExif));
+            ui.add_space(14.0);
+            let keep = widgets::checkbox(
+                ui,
+                &mut s.keep_source_date,
+                t(Key::KeepFileDate),
+                theme::font_body(),
             );
+            tip(keep, t(Key::TipKeepDate));
         });
 
         // Resize.
         cols.row(
             ui,
             |ui| {
-                widgets::dim_label(ui, "Resize (Long Edge px):");
+                tip(
+                    widgets::dim_label(ui, t(Key::ResizeLabel)),
+                    t(Key::TipResize),
+                );
             },
             |ui, w| {
-                widgets::text_field(ui, &mut s.resize_text, "0 for original", w);
+                tip(
+                    widgets::text_field(ui, &mut s.resize_text, t(Key::ResizeHint), w),
+                    t(Key::TipResize),
+                );
             },
             |ui, _| {
                 ui.label(
-                    RichText::new("(0 = Original)")
+                    RichText::new(t(Key::ResizeOriginal))
                         .font(theme::font_small())
                         .color(TEXT_DIM),
                 );
@@ -745,10 +765,13 @@ impl CcooNverterApp {
         cols.row(
             ui,
             |ui| {
-                widgets::dim_label(ui, "JPG Quality (1-100):");
+                tip(
+                    widgets::dim_label(ui, t(Key::QualityLabel)),
+                    t(Key::TipQuality),
+                );
             },
             |ui, w| {
-                widgets::color_slider(
+                let slider = widgets::color_slider(
                     ui,
                     &mut s.quality,
                     f32::from(config::MIN_JPG_QUALITY)..=f32::from(config::MAX_JPG_QUALITY),
@@ -757,6 +780,7 @@ impl CcooNverterApp {
                     theme::ACCENT_HOVER,
                     w,
                 );
+                tip(slider, t(Key::TipQuality));
                 s.quality
             },
             |ui, q| {
@@ -771,70 +795,78 @@ impl CcooNverterApp {
         ui.add_enabled_ui(raw_enabled, |ui| {
             ui.add_space(PAD_MEDIUM);
             ui.horizontal(|ui| {
-                widgets::header(ui, "RAW ADJUSTMENTS");
+                widgets::header(ui, t(Key::RawAdjustments));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(cols.value - 60.0 - 2.0);
-                    if widgets::outline_button(
+                    let reset = widgets::outline_button(
                         ui,
-                        "RESET",
+                        t(Key::Reset),
                         vec2(60.0, 20.0),
                         theme::font_small_bold(),
                         ACCENT,
                         Color32::TRANSPARENT,
                         BORDER,
-                    )
-                    .clicked()
-                    {
+                    );
+                    if tip(reset, t(Key::TipReset)).clicked() {
                         actions.push(Action::ResetAdjustments);
                     }
                     ui.add_space(10.0);
-                    widgets::checkbox(ui, &mut s.tone_curve, "Tone Curve", theme::font_body());
+                    let curve = widgets::checkbox(
+                        ui,
+                        &mut s.tone_curve,
+                        t(Key::ToneCurve),
+                        theme::font_body(),
+                    );
+                    tip(curve, t(Key::TipToneCurve));
                 });
             });
 
             // Labels stay dim; the disabled Ui fades them further.
-            let label = |ui: &mut Ui, t: &str| {
-                ui.label(RichText::new(t).font(theme::font_body()).color(TEXT_DIM));
+            let label = |ui: &mut Ui, text: &str, tooltip: &str| {
+                let resp = ui.label(RichText::new(text).font(theme::font_body()).color(TEXT_DIM));
+                tip(resp, tooltip);
             };
 
             // White balance (spans control + value columns like Python).
             wide_row(
                 ui,
                 cols,
-                |ui| label(ui, "White Balance:"),
+                |ui| label(ui, t(Key::WhiteBalanceLabel), t(Key::TipWhiteBalance)),
                 |ui, w| {
-                    ComboBox::from_id_salt("white_balance")
+                    let combo = ComboBox::from_id_salt("white_balance")
                         .width(w)
-                        .selected_text(s.white_balance.as_str())
+                        .selected_text(t(wb_name(s.white_balance)))
                         .show_ui(ui, |ui| {
                             for wb in WhiteBalance::ALL {
-                                ui.selectable_value(&mut s.white_balance, wb, wb.as_str());
+                                ui.selectable_value(&mut s.white_balance, wb, t(wb_name(wb)));
                             }
                         });
+                    tip(combo.response, t(Key::TipWhiteBalance));
                 },
             );
 
             wide_row(
                 ui,
                 cols,
-                |ui| label(ui, "Picture Style:"),
+                |ui| label(ui, t(Key::PictureStyleLabel), t(Key::TipStyle)),
                 |ui, w| {
-                    ComboBox::from_id_salt("picture_style")
+                    let combo = ComboBox::from_id_salt("picture_style")
                         .width(w)
-                        .selected_text(s.style.as_str())
+                        .selected_text(t(style_name(s.style)))
                         .show_ui(ui, |ui| {
                             for st in PictureStyle::ALL {
-                                ui.selectable_value(&mut s.style, st, st.as_str());
+                                ui.selectable_value(&mut s.style, st, t(style_name(st)));
                             }
                         });
+                    tip(combo.response, t(Key::TipStyle));
                 },
             );
 
             cols.row(
                 ui,
-                |ui| label(ui, "Exposure (EV):"),
+                |ui| label(ui, t(Key::ExposureLabel), t(Key::TipExposure)),
                 |ui, w| {
-                    widgets::color_slider(
+                    let slider = widgets::color_slider(
                         ui,
                         &mut s.exposure_ev,
                         config::MIN_EXPOSURE_EV..=config::MAX_EXPOSURE_EV,
@@ -843,6 +875,7 @@ impl CcooNverterApp {
                         theme::ACCENT_HOVER,
                         w,
                     );
+                    tip(slider, t(Key::TipExposure));
                     s.exposure_ev
                 },
                 |ui, ev| {
@@ -852,9 +885,9 @@ impl CcooNverterApp {
 
             cols.row(
                 ui,
-                |ui| label(ui, "Brightness (0.0-2.0):"),
+                |ui| label(ui, t(Key::BrightnessLabel), t(Key::TipBrightness)),
                 |ui, w| {
-                    widgets::color_slider(
+                    let slider = widgets::color_slider(
                         ui,
                         &mut s.brightness,
                         config::MIN_BRIGHTNESS..=config::MAX_BRIGHTNESS,
@@ -863,6 +896,7 @@ impl CcooNverterApp {
                         theme::ACCENT_HOVER,
                         w,
                     );
+                    tip(slider, t(Key::TipBrightness));
                     s.brightness
                 },
                 |ui, b| {
@@ -872,7 +906,7 @@ impl CcooNverterApp {
 
             let rgb = [
                 (
-                    "RGB Channel Balance:",
+                    t(Key::RgbBalanceLabel),
                     "R",
                     theme::SLIDER_RED,
                     theme::SLIDER_RED_HOVER,
@@ -884,9 +918,9 @@ impl CcooNverterApp {
                 let v = &mut s.rgb[i];
                 cols.row(
                     ui,
-                    |ui| label(ui, title),
+                    |ui| label(ui, title, t(Key::TipRgbBalance)),
                     |ui, w| {
-                        widgets::color_slider(
+                        let slider = widgets::color_slider(
                             ui,
                             v,
                             config::MIN_RGB_VALUE..=config::MAX_RGB_VALUE,
@@ -895,6 +929,7 @@ impl CcooNverterApp {
                             hover,
                             w,
                         );
+                        tip(slider, t(Key::TipRgbBalance));
                         *v
                     },
                     |ui, v| {
@@ -905,9 +940,9 @@ impl CcooNverterApp {
 
             cols.row(
                 ui,
-                |ui| label(ui, "Levels (Black/White):"),
+                |ui| label(ui, t(Key::LevelsLabel), t(Key::TipLevels)),
                 |ui, w| {
-                    widgets::color_slider(
+                    let slider = widgets::color_slider(
                         ui,
                         &mut s.black_point,
                         f32::from(config::MIN_BLACK_POINT)..=f32::from(config::MAX_BLACK_POINT),
@@ -916,6 +951,7 @@ impl CcooNverterApp {
                         TEXT,
                         w,
                     );
+                    tip(slider, t(Key::TipLevels));
                     s.black_point
                 },
                 |ui, bp| {
@@ -924,9 +960,9 @@ impl CcooNverterApp {
             );
             cols.row(
                 ui,
-                |ui| label(ui, ""),
+                |ui| label(ui, "", t(Key::TipLevels)),
                 |ui, w| {
-                    widgets::color_slider(
+                    let slider = widgets::color_slider(
                         ui,
                         &mut s.white_point,
                         f32::from(config::MIN_WHITE_POINT)..=f32::from(config::MAX_WHITE_POINT),
@@ -935,6 +971,7 @@ impl CcooNverterApp {
                         theme::SLIDER_WHITE_HOVER,
                         w,
                     );
+                    tip(slider, t(Key::TipLevels));
                     s.white_point
                 },
                 |ui, wp| {
@@ -944,18 +981,19 @@ impl CcooNverterApp {
 
             // PRESETS.
             ui.add_space(PAD_MEDIUM);
-            widgets::header(ui, "PRESETS");
+            tip(widgets::header(ui, t(Key::Presets)), t(Key::TipPreset));
             ui.horizontal(|ui| {
                 let btn = vec2(64.0, 28.0);
                 let gap = ui.spacing().item_spacing.x;
                 let combo_w = (ui.available_width() - 2.0 * btn.x - 2.0 * gap - 8.0).max(120.0);
-                let shown = selected_preset.as_deref().unwrap_or(SELECT_PRESET);
-                ComboBox::from_id_salt("presets")
+                let select_preset = t(Key::SelectPreset);
+                let shown = selected_preset.as_deref().unwrap_or(select_preset);
+                let combo = ComboBox::from_id_salt("presets")
                     .width(combo_w)
                     .selected_text(shown)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(selected_preset.is_none(), SELECT_PRESET)
+                            .selectable_label(selected_preset.is_none(), select_preset)
                             .clicked()
                         {
                             // Python: choosing the placeholder does nothing.
@@ -969,20 +1007,21 @@ impl CcooNverterApp {
                             }
                         }
                     });
-                if widgets::gold_button(ui, "SAVE", btn, theme::font_body_bold()).clicked() {
+                tip(combo.response, t(Key::TipPreset));
+                let save = widgets::gold_button(ui, t(Key::Save), btn, theme::font_body_bold());
+                if tip(save, t(Key::TipPresetSave)).clicked() {
                     actions.push(Action::OpenSavePreset);
                 }
-                if widgets::outline_button(
+                let delete = widgets::outline_button(
                     ui,
-                    "DELETE",
+                    t(Key::Delete),
                     btn,
                     theme::font_body_bold(),
                     DANGER,
                     PANEL,
                     BG,
-                )
-                .clicked()
-                {
+                );
+                if tip(delete, t(Key::TipPresetDelete)).clicked() {
                     actions.push(Action::DeletePreset);
                 }
             });
@@ -998,9 +1037,9 @@ impl CcooNverterApp {
             let cancel_w = total - gap - main_w;
             ui.spacing_mut().item_spacing.x = gap;
             let text = if converting {
-                "Converting..."
+                t(Key::Converting)
             } else {
-                "Let's Get Cooking!"
+                t(Key::StartButton)
             };
             let main = ui
                 .add_enabled_ui(!converting, |ui| {
@@ -1014,7 +1053,7 @@ impl CcooNverterApp {
                 .add_enabled_ui(converting, |ui| {
                     widgets::outline_button(
                         ui,
-                        "CANCEL",
+                        t(Key::CancelButton),
                         vec2(cancel_w, 50.0),
                         theme::font_header(),
                         DANGER,
@@ -1062,20 +1101,39 @@ impl CcooNverterApp {
             let resp = widgets::checkbox(
                 ui,
                 &mut self.check_updates,
-                "Check for updates on startup",
+                t(Key::CheckUpdates),
                 theme::font_small(),
             );
+            let resp = tip(resp, t(Key::TipCheckUpdates));
             if resp.changed() {
                 log::info!("Update check on startup: {}", self.check_updates);
             }
+            let current = self.language;
+            ui.scope(|ui| {
+                // Keep the footer row at the height of the checkbox.
+                ui.spacing_mut().interact_size.y = 18.0;
+                ui.spacing_mut().button_padding.y = 0.0;
+                let combo = ComboBox::from_id_salt("language")
+                    .width(72.0)
+                    .selected_text(
+                        RichText::new(language_label(self.language)).font(theme::font_small()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for choice in [UiLanguage::Auto, UiLanguage::Korean, UiLanguage::English] {
+                            ui.selectable_value(&mut self.language, choice, language_label(choice));
+                        }
+                    });
+                tip(combo.response, t(Key::TipLanguage));
+            });
+            if self.language != current {
+                i18n::apply(self.language);
+                log::info!("Language: {}", self.language.as_str());
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
-                    RichText::new(format!(
-                        "v{}  ·  MIT  ·  RAW decoding: rawler (LGPL-2.1)",
-                        config::APP_VERSION
-                    ))
-                    .font(theme::font_small())
-                    .color(Color32::from_gray(0x80)),
+                    RichText::new(tf(Key::FooterCredit, &[&config::APP_VERSION]))
+                        .font(theme::font_small())
+                        .color(Color32::from_gray(0x80)),
                 );
             });
         });
@@ -1091,23 +1149,23 @@ impl CcooNverterApp {
             .show(ctx, |ui| {
                 ui.set_width(300.0);
                 ui.label(
-                    RichText::new("Save Preset")
+                    RichText::new(t(Key::SavePresetTitle))
                         .font(theme::font_header())
                         .color(ACCENT),
                 );
                 ui.add_space(4.0);
-                widgets::dim_label(ui, "Enter preset name:");
+                widgets::dim_label(ui, t(Key::EnterPresetName));
                 let resp = widgets::text_field(ui, name, "", 300.0);
                 if !resp.has_focus() && !resp.lost_focus() {
                     resp.request_focus();
                 }
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if widgets::gold_button(
                             ui,
-                            "SAVE",
+                            t(Key::Save),
                             vec2(80.0, 28.0),
                             theme::font_body_bold(),
                         )
@@ -1118,7 +1176,7 @@ impl CcooNverterApp {
                         }
                         if widgets::outline_button(
                             ui,
-                            "CANCEL",
+                            t(Key::CancelButton),
                             vec2(80.0, 28.0),
                             theme::font_body_bold(),
                             TEXT_DIM,
@@ -1148,16 +1206,15 @@ impl CcooNverterApp {
                 let width = (ctx.content_rect().width() - 80.0).clamp(280.0, 460.0);
                 ui.set_width(width);
                 ui.label(
-                    RichText::new("A New Version is Available!")
+                    RichText::new(t(Key::UpdateAvailable))
                         .font(theme::font_header())
                         .color(ACCENT),
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(format!(
-                        "Current: v{}  →  Latest: v{}",
-                        config::APP_VERSION,
-                        info.version
+                    RichText::new(tf(
+                        Key::UpdateVersions,
+                        &[&config::APP_VERSION, &info.version],
                     ))
                     .font(theme::font_body_bold())
                     .color(TEXT),
@@ -1185,7 +1242,7 @@ impl CcooNverterApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if widgets::gold_button(
                             ui,
-                            "DOWNLOAD",
+                            t(Key::Download),
                             vec2(120.0, 30.0),
                             theme::font_body_bold(),
                         )
@@ -1196,7 +1253,7 @@ impl CcooNverterApp {
                         }
                         if widgets::outline_button(
                             ui,
-                            "LATER",
+                            t(Key::Later),
                             vec2(100.0, 30.0),
                             theme::font_body_bold(),
                             TEXT_DIM,
@@ -1338,9 +1395,18 @@ fn wide_row(
     });
 }
 
+/// Footer language combo text.
+fn language_label(choice: UiLanguage) -> &'static str {
+    match choice {
+        UiLanguage::Auto => t(Key::LanguageSystem),
+        UiLanguage::English => t(Key::LanguageEnglish),
+        UiLanguage::Korean => t(Key::LanguageKorean),
+    }
+}
+
 /// Native folder picker starting at the current text (if it is a folder).
-fn pick_folder(current: &str) -> Option<PathBuf> {
-    let mut dialog = rfd::FileDialog::new();
+fn pick_folder(current: &str, title: &str) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title(title);
     let cur = Path::new(current.trim());
     if !current.trim().is_empty() && cur.is_dir() {
         dialog = dialog.set_directory(cur);
@@ -1368,4 +1434,152 @@ fn spawn_update_check(cache_file: PathBuf) -> Receiver<ReleaseInfo> {
         log::warn!("Could not start update check thread: {e}");
     }
     rx
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use crate::fonts;
+    use crate::i18n::Lang;
+    use eframe::egui::{FontId, RawInput, Rect, Vec2};
+
+    const WIDTH: f32 = 600.0;
+    const HEIGHT: f32 = 820.0;
+
+    fn input() -> RawInput {
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(WIDTH, HEIGHT),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// One frame with no renderer: texture deltas are discarded on purpose.
+    fn run_frame(ctx: &egui::Context, ui: impl FnMut(&mut Ui)) {
+        let mut out = ctx.run_ui(input(), ui);
+        out.textures_delta.clear();
+    }
+
+    fn context() -> egui::Context {
+        let ctx = egui::Context::default();
+        fonts::install(&ctx);
+        theme::apply(&ctx);
+        // Fonts become available after the first frame.
+        run_frame(&ctx, |_| {});
+        ctx
+    }
+
+    fn text_width(ctx: &egui::Context, text: &str, font: FontId) -> f32 {
+        ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, TEXT).size().x)
+    }
+
+    /// Every label fits its fixed cell, in both languages.
+    fn check_cells(lang: Lang) {
+        i18n::set_language(lang);
+        let ctx = context();
+        let body = [
+            Key::ResizeLabel,
+            Key::QualityLabel,
+            Key::WhiteBalanceLabel,
+            Key::PictureStyleLabel,
+            Key::ExposureLabel,
+            Key::BrightnessLabel,
+            Key::RgbBalanceLabel,
+            Key::LevelsLabel,
+        ];
+        let settings_label = Columns::SETTINGS.label;
+        for key in body {
+            let w = text_width(&ctx, t(key), theme::font_body());
+            assert!(
+                w <= settings_label,
+                "{key:?} {lang:?}: {w} > {settings_label}"
+            );
+        }
+        let w = text_width(&ctx, t(Key::ExifPreservation), theme::font_header());
+        assert!(w <= settings_label, "ExifPreservation {lang:?}: {w}");
+        let path_label = 186.0;
+        for key in [Key::SourceFolder, Key::OutputFolderOptional] {
+            let w = text_width(&ctx, t(key), theme::font_body_bold());
+            assert!(w <= path_label, "{key:?} {lang:?}: {w}");
+        }
+        let w = text_width(&ctx, t(Key::IfOutputExists), theme::font_body());
+        assert!(w <= path_label, "IfOutputExists {lang:?}: {w}");
+        let buttons = [
+            (Key::Browse, 80.0, theme::font_body_bold()),
+            (Key::Save, 64.0, theme::font_body_bold()),
+            (Key::Delete, 64.0, theme::font_body_bold()),
+            (Key::Reset, 60.0, theme::font_small_bold()),
+            (Key::ShowPreview, 112.0, theme::font_small_bold()),
+            (Key::HidePreview, 112.0, theme::font_small_bold()),
+            (Key::ShowBefore, 120.0, theme::font_small_bold()),
+            (Key::ShowAfter, 120.0, theme::font_small_bold()),
+            (Key::CameraJpegTag, 92.0, theme::font_small_bold()),
+            (Key::Clear, 48.0, theme::font_small_bold()),
+            (Key::Download, 120.0, theme::font_body_bold()),
+            (Key::Later, 100.0, theme::font_body_bold()),
+        ];
+        for (key, width, font) in buttons {
+            let w = text_width(&ctx, t(key), font);
+            assert!(w <= width - 4.0, "{key:?} {lang:?}: {w} > {width}");
+        }
+        // Footer row: checkbox, language combo, credit.
+        let footer = text_width(&ctx, t(Key::CheckUpdates), theme::font_small())
+            + text_width(
+                &ctx,
+                &tf(Key::FooterCredit, &[&config::APP_VERSION]),
+                theme::font_small(),
+            )
+            + 26.0 // checkbox box and gaps
+            + 72.0 + 30.0; // combo
+        let row = WIDTH - 2.0 * PAD_LARGE - 20.0;
+        assert!(footer <= row, "footer {lang:?}: {footer} > {row}");
+        i18n::set_language(Lang::English);
+    }
+
+    fn content_height(lang: Lang) -> f32 {
+        i18n::set_language(lang);
+        let ctx = context();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = AppPaths::with_root(dir.path().to_path_buf());
+        let settings = AppSettings {
+            check_updates: false,
+            ..Default::default()
+        };
+        let presets = PresetStore::default();
+        let mut app = CcooNverterApp::new(ctx.clone(), paths, settings, presets);
+        let mut height = 0.0f32;
+        // Two frames: text layout settles after the first.
+        for _ in 0..2 {
+            run_frame(&ctx, |ui| {
+                Frame::new()
+                    .inner_margin(Margin::symmetric(PAD_LARGE as i8, PAD_MEDIUM as i8))
+                    .show(ui, |ui| {
+                        ui.set_width(WIDTH - 2.0 * PAD_LARGE);
+                        let mut actions = Vec::new();
+                        app.draw(ui, &mut actions, true);
+                        height = ui.min_rect().height();
+                    });
+            });
+        }
+        i18n::set_language(Lang::English);
+        height
+    }
+
+    #[test]
+    fn labels_fit_their_cells_in_both_languages() {
+        check_cells(Lang::English);
+        check_cells(Lang::Korean);
+    }
+
+    #[test]
+    fn default_window_fits_in_both_languages() {
+        for lang in [Lang::English, Lang::Korean] {
+            let h = content_height(lang);
+            let limit = HEIGHT - 2.0 * PAD_MEDIUM;
+            assert!(h <= limit, "{lang:?}: content {h} > {limit}");
+            println!("{lang:?}: content height {h} of {limit}");
+        }
+    }
 }

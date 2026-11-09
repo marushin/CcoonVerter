@@ -3,7 +3,7 @@ members = ["crates/core", "crates/cli", "crates/gui"]
 resolver = "2"
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/marushin/CcoonVerter"
@@ -29,6 +29,7 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 tempfile = "3.27.0"
+sha2 = "0.10.9"
 # eframe's defaults minus `wgpu` (and the wasm-only `web_screen_reader`):
 # the GUI renders with glow (OpenGL) by default; `ccoonverter/wgpu` opts in.
 eframe = { version = "0.37.0", default-features = false, features = [
@@ -49,6 +50,7 @@ raw-window-handle = "0.6.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 rfd = "0.18.0"
 open = "5.4.5"
+sys-locale = "0.3.2"
 winresource = "0.1.34"
 
 [profile.release]

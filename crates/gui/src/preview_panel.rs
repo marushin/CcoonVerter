@@ -11,6 +11,7 @@ use eframe::egui::{
 };
 
 use crate::controller::DropSelection;
+use crate::i18n::{t, tf, Key};
 use crate::preview::{desired_request, short_message, PreviewEvent, PreviewWorker, RenderRequest};
 use crate::theme::{self, ACCENT, BG, BORDER, PANEL, TEXT, TEXT_DIM};
 use crate::widgets;
@@ -87,7 +88,7 @@ impl PreviewPanel {
         self.index = 0;
         self.clear_images();
         self.last_sent = None;
-        self.message = self.files.is_empty().then(|| "No RAW files here.".into());
+        self.message = self.files.is_empty().then(|| t(Key::NoRawHere).to_string());
     }
 
     fn step(&mut self, delta: isize) {
@@ -129,9 +130,9 @@ impl PreviewPanel {
             if let Some(s) = selection {
                 self.set_files(s.files.clone());
             } else if key.is_empty() {
-                self.message = Some("Select a folder or drop RAW files.".into());
+                self.message = Some(t(Key::SelectOrDrop).to_string());
             } else {
-                self.message = Some("Looking for RAW files...".into());
+                self.message = Some(t(Key::LookingForRaw).to_string());
                 self.scan_due = Some(Instant::now() + SCAN_DEBOUNCE);
             }
         }
@@ -155,7 +156,7 @@ impl PreviewPanel {
                     if let (Some(w), Some(req)) = (self.worker.as_mut(), desired.clone()) {
                         w.request_render(req);
                         self.last_sent = desired;
-                        self.status = "Updating...".into();
+                        self.status = t(Key::PreviewUpdating).to_string();
                     }
                 }
             }
@@ -171,15 +172,15 @@ impl PreviewPanel {
                 }
                 self.set_files(files);
                 if self.files.is_empty() {
-                    self.message = Some("No RAW files in this folder.".into());
+                    self.message = Some(t(Key::NoRawInFolder).to_string());
                 } else {
                     self.message = None;
                 }
-                self.status = format!("{} RAW file(s)", self.files.len());
+                self.status = tf(Key::RawCount, &[&self.files.len()]);
             }
             PreviewEvent::Developing { file } => {
                 if is_current(&file, self.current()) {
-                    self.status = "Developing...".into();
+                    self.status = t(Key::PreviewDeveloping).to_string();
                     self.message = None;
                 }
             }
@@ -209,9 +210,9 @@ impl PreviewPanel {
                     self.status.clear();
                     let what = short_message(&message);
                     self.message = Some(if self.embedded.is_some() {
-                        format!("Can't develop this file ({what}). Camera JPEG shown.")
+                        tf(Key::PreviewCantDevelop, &[&what])
                     } else {
-                        format!("Preview unavailable: {what}")
+                        tf(Key::PreviewUnavailable, &[&what])
                     });
                 }
             }
@@ -223,7 +224,7 @@ impl PreviewPanel {
         let n = self.files.len();
         let mut step = 0isize;
         ui.horizontal(|ui| {
-            widgets::header(ui, "PREVIEW");
+            widgets::header(ui, t(Key::PreviewHeader));
             let nav = n > 1;
             ui.add_enabled_ui(nav, |ui| {
                 if nav_button(ui, "<") {
@@ -258,13 +259,13 @@ impl PreviewPanel {
             let has_camera = self.embedded.is_some();
             if embedded_mode {
                 widgets::cell(ui, right_w, 26.0, Align::Max, |ui| {
-                    widgets::dim_label(ui, "Camera JPEG");
+                    widgets::dim_label(ui, t(Key::CameraJpeg));
                 });
             } else {
                 let text = if self.show_before && has_camera {
-                    "SHOW AFTER"
+                    t(Key::ShowAfter)
                 } else {
-                    "SHOW BEFORE"
+                    t(Key::ShowBefore)
                 };
                 ui.add_enabled_ui(has_camera, |ui| {
                     if widgets::outline_button(
@@ -276,7 +277,7 @@ impl PreviewPanel {
                         PANEL,
                         BORDER,
                     )
-                    .on_hover_text("Compare with the camera's embedded JPEG")
+                    .on_hover_text(t(Key::CompareTip))
                     .clicked()
                     {
                         self.show_before = !self.show_before;
@@ -319,7 +320,7 @@ impl PreviewPanel {
                     painter.text(
                         tag.center(),
                         Align2::CENTER_CENTER,
-                        "CAMERA JPEG",
+                        t(Key::CameraJpegTag),
                         theme::font_small_bold(),
                         ACCENT,
                     );
@@ -329,13 +330,13 @@ impl PreviewPanel {
                 let text = if let Some(m) = self.message.as_deref() {
                     m
                 } else if self.paused {
-                    "Paused while converting."
+                    t(Key::PausedWhileConverting)
                 } else if embedded_mode && self.camera_checked {
-                    "No embedded JPEG in this file."
+                    t(Key::NoEmbeddedJpeg)
                 } else if n > 0 {
-                    "Loading preview..."
+                    t(Key::LoadingPreview)
                 } else {
-                    "No preview yet."
+                    t(Key::NoPreviewYet)
                 };
                 painter.text(
                     rect.center(),
@@ -348,9 +349,9 @@ impl PreviewPanel {
         }
 
         let status = if self.paused {
-            "Preview paused while converting.".to_string()
+            t(Key::PreviewPausedStatus).to_string()
         } else if embedded_mode && self.camera_checked && self.embedded.is_none() {
-            "No embedded JPEG in this file; conversion will develop the RAW.".to_string()
+            t(Key::NoEmbeddedDevelopStatus).to_string()
         } else if frame.is_some() {
             self.message.clone().unwrap_or_else(|| self.status.clone())
         } else {

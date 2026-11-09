@@ -11,6 +11,7 @@ mod app;
 mod controller;
 mod dialogs;
 mod fonts;
+mod i18n;
 mod preview;
 mod preview_panel;
 mod theme;
@@ -49,9 +50,9 @@ fn load_icon() -> Option<egui::IconData> {
 
 /// Shown when the window cannot be created; points to the other renderer.
 #[cfg(not(feature = "wgpu"))]
-const RENDERER_HINT: &str = "This build draws with OpenGL 2.0+. Update the graphics driver, or (old GPU, remote desktop or VM) try a build with the wgpu renderer (`cargo build --release -p ccoonverter --features wgpu`).";
+const RENDERER_HINT: i18n::Key = i18n::Key::RendererHintGlow;
 #[cfg(feature = "wgpu")]
-const RENDERER_HINT: &str = "This build draws with wgpu (DirectX 12 / Vulkan / Metal). If no adapter is available (old GPU, remote desktop or VM), use the default OpenGL (glow) build.";
+const RENDERER_HINT: i18n::Key = i18n::Key::RendererHintWgpu;
 
 fn window_title() -> String {
     format!("{} v{}", config::APP_NAME, env!("CARGO_PKG_VERSION"))
@@ -70,6 +71,13 @@ fn main() -> eframe::Result {
         log::info!("Migrated legacy file {}", f.display());
     }
     let settings = AppSettings::load(&paths.settings_file());
+    i18n::apply(settings.language);
+    log::info!(
+        "UI language: setting {}, system locale {:?}, using {:?}",
+        settings.language.as_str(),
+        i18n::system_locale(),
+        i18n::language()
+    );
     let presets = PresetStore::load(&paths.presets_file());
 
     let mut viewport = egui::ViewportBuilder::default()
@@ -113,9 +121,9 @@ fn main() -> eframe::Result {
         rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
             .set_title(config::APP_NAME)
-            .set_description(format!(
-                "Could not open the application window:\n{e}\n\n{}",
-                RENDERER_HINT
+            .set_description(i18n::tf(
+                i18n::Key::WindowOpenFailed,
+                &[&e, &i18n::t(RENDERER_HINT)],
             ))
             .show();
     }
