@@ -2,6 +2,40 @@
 
 이 파일의 `## vX.Y.Z - 날짜` 절은 GitHub 릴리스 본문으로 그대로 사용됩니다(`.github/workflows/release.yml`).
 
+## v0.12.0 - 2026-11-09
+
+**PNG, 16-bit TIFF and WebP output, AdobeRGB with embedded ICC profiles, file name templates, an in-app list of failed files, and a thread count that follows available memory.**
+
+### 새 기능
+
+1. **출력 형식**: JPEG(기본), PNG(8비트 무손실), 16비트 TIFF, WebP(손실 압축)를 고를 수 있습니다. TIFF는 f32 처리 결과를 그대로 16비트로 저장하며 8비트를 거치지 않습니다. WebP는 libwebp로 인코딩하고 한 변 최대 16383픽셀입니다. 확장자는 형식을 따르고, 카메라 JPEG 추출은 항상 JPEG입니다(화면에도 표시).
+2. **색 공간과 ICC 프로파일**: sRGB(기본)와 AdobeRGB를 지원하고 모든 출력 형식에 ICC 프로파일을 넣습니다. 프로파일은 공개된 원색 값으로 앱이 직접 만들며, AdobeRGB 쪽 이름은 "AdobeRGB-compatible"입니다.
+3. **파일 이름 템플릿**: `{name}` `{date}` `{time}` `{seq}` `{camera}` `{ext}`를 쓸 수 있고 화면에서 결과 예시를 바로 볼 수 있습니다. 기본값 `{name}`은 지금까지와 같습니다. 촬영일이 없으면 파일 날짜를 씁니다. `{seq}`는 파일 순서대로 매겨 스레드 타이밍과 무관합니다. 경로 구분자와 `..`는 거부합니다.
+4. **실패한 파일 목록**: 일괄 변환 뒤 앱 안에서 실패한 파일 이름과 이유를 보여 줍니다. Nikon HE/HE\*, Sony A7 V처럼 현상을 지원하지 않는 파일에는 "카메라 JPEG 추출"로 꺼낼 수 있다고 안내하며, 자동으로 다른 방식으로 바꾸지 않습니다.
+5. **메모리 기반 스레드 수**: 가장 큰 이미지 크기와 사용 가능한 메모리로 현상 스레드 수를 정합니다(이전: 최대 4개). `-j`처럼 직접 지정하면 그 값을 씁니다. 결정 내용은 로그에 남습니다.
+6. **출력 옵션 창**: 경로 영역의 OUTPUT 버튼으로 엽니다. 기본 창 크기(600x820)에는 행을 추가하지 않았습니다.
+7. **서명 준비**: `release.yml`에 macOS 공증과 Azure Trusted Signing 단계를 넣었습니다. 시크릿이 있을 때만 실행됩니다(`docs/SIGNING.md`).
+
+### 수정
+
+- **EXIF 패치 패닉**: 끝이 잘린 Orientation 항목이 있는 EXIF에서 메타데이터 수정 코드가 패닉할 수 있었습니다(코드 검토로 발견, 회귀 테스트 추가).
+- **손상된 CR3/TIFF로 프로그램 전체가 종료되던 문제**: 크기 0인 BMFF 박스나 터무니없는 TIFF 항목 때문에 rawler가 끝없이 메모리를 쓰거나 수십 GB를 요청해 프로세스가 죽을 수 있었습니다. 이런 파일은 이제 디코더에 넘기기 전에 파일별 실패로 처리합니다(퍼징으로 발견). rawler 메이커노트 경로까지 전부 막지는 못합니다.
+- **임베디드 스캐너 작업량 제한**: 끝나지 않는 JPEG 스트림이 파일 전체를 차지하면 스캔 시간이 파일 크기의 제곱으로 늘 수 있었습니다.
+- **진행률 메시지 제한**: GUI로 보내는 진행 메시지를 초당 20개로 제한해 대량 변환에서 채널이 넘치지 않습니다.
+- 현상 결과가 AdobeRGB일 때 EXIF의 색 공간 값(ColorSpace, 호환성 인덱스)을 결과에 맞게 고칩니다.
+
+### 변경된 동작
+
+- JPEG 결과에도 sRGB ICC 프로파일이 들어가 파일이 약 2.5KB 커집니다. 픽셀 값은 그대로입니다.
+- 품질 슬라이더 이름이 "품질"로 바뀌었고 PNG/TIFF에서는 비활성화됩니다.
+
+### 알려진 제한
+
+- **AdobeRGB 색 범위**: rawler가 현상 단계에서 sRGB 밖의 색을 잘라 낸 뒤 변환합니다. 프로파일과 변환은 정확하지만, 실제 광색역 파이프라인처럼 sRGB 밖의 색이 살아나지는 않습니다.
+- WebP는 손실 압축만 지원합니다. 무손실이 필요하면 PNG를 쓰세요.
+- 카메라 JPEG 추출 결과에는 ICC를 넣지 않습니다(카메라 JPEG 그대로).
+- 서명/공증 단계는 이 환경에서 실행해 보지 못했습니다. WebP의 C 컴파일은 macOS universal 빌드에서 CI로만 확인할 수 있습니다.
+
 ## v0.11.0 - 2026-11-09
 
 **Five more RAW formats, a real-sample regression matrix, automatic exposure that follows the camera, GPS/lens/rating metadata, and a full Korean/English UI.**
