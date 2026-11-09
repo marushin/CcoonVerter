@@ -299,6 +299,75 @@ pub fn render(
     Ok(img)
 }
 
+/// Extra pixels developed on each side of a region so that the neighbourhood
+/// filters (style sharpness: radius 1, unsharp mask: radius 2) see real
+/// neighbours and the trimmed edge matches a whole-image render.
+const REGION_MARGIN: u32 = 8;
+/// About this many pixels are sampled to find the whole image's contrast pivot.
+const PIVOT_SAMPLE_PIXELS: u64 = 400_000;
+
+/// A rectangle in image pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Every `step`-th pixel of `img`. Unlike a resize this keeps the pixel
+/// values, so the tone stages behave as they do on the full image.
+fn decimate(img: &RgbF32Image, step: u32) -> RgbF32Image {
+    if step <= 1 {
+        return img.clone();
+    }
+    let (w, h) = (img.width().div_ceil(step), img.height().div_ceil(step));
+    RgbF32Image::from_fn(w, h, |x, y| *img.get_pixel(x * step, y * step))
+}
+
+/// The same pixels [`render`] with no resize gives for `region` of `full`,
+/// without rendering the rest of the image. For a 100 % view. The only
+/// whole-image dependency in the chain is the pivot of the style's contrast
+/// step, which is measured on a sample of `full` taken through the same stages.
+pub fn render_region(
+    full: &RgbF32Image,
+    stats: &BaseStats,
+    params: &RenderParams,
+    region: Region,
+    cancel: &AtomicBool,
+) -> Result<RgbF32Image> {
+    check(cancel)?;
+    let pixels = u64::from(full.width()) * u64::from(full.height());
+    let step = ((pixels / PIVOT_SAMPLE_PIXELS.max(1)) as f64).sqrt() as u32;
+    let mut sample = decimate(full, step.max(1));
+    apply_exposure_and_tone(&mut sample, stats, params);
+    adjust::apply(
+        &mut sample,
+        params.rgb,
+        params.black_point,
+        params.white_point,
+    );
+    let pivot = style::contrast_pivot(sample, params.style);
+
+    let x0 = region.x.min(full.width()).saturating_sub(REGION_MARGIN);
+    let y0 = region.y.min(full.height()).saturating_sub(REGION_MARGIN);
+    let x1 = (region.x + region.w + REGION_MARGIN).min(full.width());
+    let y1 = (region.y + region.h + REGION_MARGIN).min(full.height());
+    let mut img = image::imageops::crop_imm(full, x0, y0, x1 - x0, y1 - y0).to_image();
+    apply_exposure_and_tone(&mut img, stats, params);
+    check(cancel)?;
+    adjust::apply(&mut img, params.rgb, params.black_point, params.white_point);
+    match pivot {
+        Some(mean) => style::apply_to_region(&mut img, params.style, mean),
+        None => style::apply(&mut img, params.style),
+    }
+    check(cancel)?;
+    sharpen::unsharp_luma(&mut img, params.sharpen);
+    let w = region.w.min(full.width().saturating_sub(region.x));
+    let h = region.h.min(full.height().saturating_sub(region.y));
+    Ok(image::imageops::crop_imm(&img, region.x - x0, region.y - y0, w, h).to_image())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +657,91 @@ mod tests {
         assert!(render(img, &stats(0.5), &params(), 0, &cancel)
             .unwrap_err()
             .is_cancelled());
+    }
+
+    fn textured(w: u32, h: u32) -> RgbF32Image {
+        RgbF32Image::from_fn(w, h, |x, y| {
+            let n = ((x * 7 + y * 13) % 11) as f32 / 40.0;
+            Rgb([
+                x as f32 / w as f32 * 0.6 + n,
+                y as f32 / h as f32 * 0.5 + n,
+                0.2 + n,
+            ])
+        })
+    }
+
+    /// Worst per-channel difference, in 8-bit steps.
+    fn worst_diff(whole: &RgbF32Image, part: &RgbF32Image, r: Region) -> f32 {
+        let mut worst = 0f32;
+        for (x, y, p) in part.enumerate_pixels() {
+            let q = whole.get_pixel(x + r.x, y + r.y);
+            for c in 0..3 {
+                worst = worst.max((p.0[c] - q.0[c]).abs() * 255.0);
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn region_matches_whole_image_for_every_style() {
+        let base = textured(320, 240);
+        let cancel = AtomicBool::new(false);
+        let s = stats(0.8);
+        let r = Region {
+            x: 40,
+            y: 30,
+            w: 100,
+            h: 80,
+        };
+        for style in PictureStyle::ALL {
+            let p = RenderParams {
+                style,
+                sharpen: 0.8,
+                exposure_ev: 0.3,
+                ..params()
+            };
+            let whole = render(base.clone(), &s, &p, 0, &cancel).unwrap();
+            let part = render_region(&base, &s, &p, r, &cancel).unwrap();
+            assert_eq!(part.dimensions(), (r.w, r.h));
+            let d = worst_diff(&whole, &part, r);
+            assert!(d < 0.01, "{style:?}: {d} of 255");
+        }
+    }
+
+    #[test]
+    fn region_of_a_large_image_uses_a_sampled_pivot() {
+        // 4 MP: the pivot comes from a decimated sample; the error stays invisible.
+        let base = textured(2400, 1700);
+        let cancel = AtomicBool::new(false);
+        let s = stats(0.8);
+        let r = Region {
+            x: 900,
+            y: 600,
+            w: 300,
+            h: 200,
+        };
+        let p = RenderParams {
+            style: PictureStyle::Dramatic,
+            ..params()
+        };
+        let whole = render(base.clone(), &s, &p, 0, &cancel).unwrap();
+        let part = render_region(&base, &s, &p, r, &cancel).unwrap();
+        let d = worst_diff(&whole, &part, r);
+        assert!(d < 1.0, "{d} of 255");
+    }
+
+    #[test]
+    fn region_at_the_image_edge_is_clamped() {
+        let base = textured(64, 48);
+        let cancel = AtomicBool::new(false);
+        let r = Region {
+            x: 50,
+            y: 40,
+            w: 100,
+            h: 100,
+        };
+        let part = render_region(&base, &stats(0.8), &params(), r, &cancel).unwrap();
+        assert_eq!(part.dimensions(), (14, 8));
     }
 
     #[test]

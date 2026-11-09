@@ -39,6 +39,7 @@ pub fn load_base(path: &Path, long_edge: u32, cancel: &AtomicBool) -> Result<Lin
     Ok(LinearBase {
         image: resize::reduce_long_edge_f32(base.image, long_edge),
         stats: base.stats,
+        full_size: base.full_size,
     })
 }
 

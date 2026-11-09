@@ -80,6 +80,8 @@ impl BaseStats {
 pub struct LinearBase {
     pub image: RgbF32Image,
     pub stats: BaseStats,
+    /// Upright size of the fully developed image; `image` may be a reduced copy.
+    pub full_size: (u32, u32),
 }
 
 /// Upper bound of the auto exposure gain (guards against amplifying noise of
@@ -148,9 +150,12 @@ pub fn develop_linear(
         stats.meter_source,
         stats.auto_gains
     );
+    let image = crate::resize::apply_orientation(img, orientation);
+    let full_size = image.dimensions();
     Ok(LinearBase {
-        image: crate::resize::apply_orientation(img, orientation),
+        image,
         stats,
+        full_size,
     })
 }
 

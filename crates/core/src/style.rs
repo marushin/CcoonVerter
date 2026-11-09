@@ -68,6 +68,11 @@ pub fn mean_luma(img: &RgbF32Image) -> f32 {
 /// `ImageEnhance.Contrast(img).enhance(f)`.
 pub fn contrast(img: &mut RgbF32Image, f: f32) {
     let mean = mean_luma(img);
+    contrast_around(img, f, mean);
+}
+
+/// Contrast around a given pivot instead of the image's own mean.
+fn contrast_around(img: &mut RgbF32Image, f: f32, mean: f32) {
     for_each_px(img, |p| {
         for v in p.iter_mut() {
             *v = blend(mean, *v, f);
@@ -152,61 +157,78 @@ pub fn colorize(img: &mut RgbF32Image, black: u32, white: u32) {
 pub const SEPIA_BLACK: u32 = 0x704214;
 pub const SEPIA_WHITE: u32 = 0xC0A080;
 
-/// Apply a picture style in place, in the exact order Python used.
-pub fn apply(img: &mut RgbF32Image, style: PictureStyle) {
+#[derive(Debug, Clone, Copy)]
+enum Step {
+    Color(f32),
+    Contrast(f32),
+    Brightness(f32),
+    Sharpness(f32),
+    Grayscale,
+    /// grayscale -> colorize (colorize itself takes luma)
+    Sepia,
+}
+
+/// The enhancer steps of a style, in the exact order Python used.
+fn steps(style: PictureStyle) -> &'static [Step] {
     use PictureStyle::*;
+    use Step::{Brightness as B, Color as C, Contrast as K, Grayscale as G, Sharpness as S};
     match style {
-        Standard => {}
-        Portrait => {
-            color(img, 0.9);
-            contrast(img, 0.95);
-            sharpness(img, 0.9);
-        }
-        Landscape => {
-            color(img, 1.3);
-            contrast(img, 1.15);
-            sharpness(img, 1.2);
-        }
-        Neutral => {
-            color(img, 0.85);
-            contrast(img, 0.9);
-        }
-        Vivid => {
-            color(img, 1.4);
-            contrast(img, 1.1);
-        }
-        Monochrome => {
-            grayscale(img);
-            contrast(img, 1.1);
-            sharpness(img, 1.05);
-        }
-        Sepia => {
-            // grayscale -> colorize (colorize itself takes luma)
-            colorize(img, SEPIA_BLACK, SEPIA_WHITE);
-        }
-        Cinematic => {
-            color(img, 0.8);
-            contrast(img, 1.2);
-            brightness(img, 0.95);
-        }
-        Hdr => {
-            contrast(img, 1.3);
-            color(img, 1.2);
-            sharpness(img, 1.15);
-        }
-        Soft => {
-            color(img, 0.95);
-            contrast(img, 0.85);
-            sharpness(img, 0.8);
-            brightness(img, 1.05);
-        }
-        Dramatic => {
-            color(img, 1.4);
-            contrast(img, 1.3);
-            sharpness(img, 1.1);
-        }
-        BlackAndWhite => grayscale(img),
+        Standard => &[],
+        Portrait => &[C(0.9), K(0.95), S(0.9)],
+        Landscape => &[C(1.3), K(1.15), S(1.2)],
+        Neutral => &[C(0.85), K(0.9)],
+        Vivid => &[C(1.4), K(1.1)],
+        Monochrome => &[G, K(1.1), S(1.05)],
+        Sepia => &[Step::Sepia],
+        Cinematic => &[C(0.8), K(1.2), B(0.95)],
+        Hdr => &[K(1.3), C(1.2), S(1.15)],
+        Soft => &[C(0.95), K(0.85), S(0.8), B(1.05)],
+        Dramatic => &[C(1.4), K(1.3), S(1.1)],
+        BlackAndWhite => &[G],
     }
+}
+
+fn run_step(img: &mut RgbF32Image, step: Step, mean: f32) {
+    match step {
+        Step::Color(f) => color(img, f),
+        Step::Contrast(f) => contrast_around(img, f, mean),
+        Step::Brightness(f) => brightness(img, f),
+        Step::Sharpness(f) => sharpness(img, f),
+        Step::Grayscale => grayscale(img),
+        Step::Sepia => colorize(img, SEPIA_BLACK, SEPIA_WHITE),
+    }
+}
+
+/// Apply a picture style in place. `Contrast` pivots on the mean luma of `img`.
+pub fn apply(img: &mut RgbF32Image, style: PictureStyle) {
+    for &step in steps(style) {
+        let mean = match step {
+            Step::Contrast(_) => mean_luma(img),
+            _ => 0.0,
+        };
+        run_step(img, step, mean);
+    }
+}
+
+/// [`apply`] for a part of a larger image: `Contrast` pivots on
+/// `image_mean` (see [`contrast_pivot`]) instead of the mean of this part.
+pub fn apply_to_region(img: &mut RgbF32Image, style: PictureStyle, image_mean: f32) {
+    for &step in steps(style) {
+        run_step(img, step, image_mean);
+    }
+}
+
+/// The value `Contrast` would pivot on for this whole image, or `None` for a
+/// style without a contrast step. Consumes the image: only the steps before
+/// contrast are applied to it.
+pub fn contrast_pivot(mut img: RgbF32Image, style: PictureStyle) -> Option<f32> {
+    for &step in steps(style) {
+        if matches!(step, Step::Contrast(_)) {
+            return Some(mean_luma(&img));
+        }
+        run_step(&mut img, step, 0.0);
+    }
+    None
 }
 
 #[cfg(test)]
