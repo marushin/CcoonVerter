@@ -18,8 +18,8 @@ v0.9.0부터 Rust로 전면 재작성되어 설치 없이 실행되는 단일 �
 
 | OS | 파일 | 비고 |
 |---|---|---|
-| Windows 10/11 (x64) | `CcooNverter_v0.12.0_windows_x64.exe` | 설치 불필요. 그대로 실행 |
-| macOS 11 이상 (Apple Silicon + Intel) | `CcooNverter_v0.12.0_macos_universal.dmg` | DMG를 열고 `CcooNverter.app`을 Applications로 드래그 |
+| Windows 10/11 (x64) | `CcooNverter_v0.13.0_windows_x64.exe` | 설치 불필요. 그대로 실행 |
+| macOS 11 이상 (Apple Silicon + Intel) | `CcooNverter_v0.13.0_macos_universal.dmg` | DMG를 열고 `CcooNverter.app`을 Applications로 드래그 |
 
 `SHA256SUMS.txt`로 파일 무결성을 확인할 수 있습니다.
 
@@ -35,14 +35,15 @@ v0.9.0부터 Rust로 전면 재작성되어 설치 없이 실행되는 단일 �
 
 ## 주요 기능
 
-- **미리보기 패널**(v0.10.0): 변환 전에 결과를 확인. 넓은 창에서는 설정 옆, 좁은 창에서는 SHOW PREVIEW로 펼침. 슬라이더를 움직이면 바로 다시 그리고, 카메라 임베디드 JPEG과 before/after 비교 가능
+- **따뜻한 암실 화면**(v0.13.0): 사진 주변은 색 판단을 방해하지 않도록 완전한 중립 회색, 실행 버튼과 진행률은 항상 보이는 하단 바에 고정. 변환 결과는 앱 안의 결과 카드로 표시
+- **미리보기**: 변환 전에 결과를 확인. 넓은 창에서는 가운데에 크게, 좁은 창에서는 펼치기 버튼으로 표시. 슬라이더를 움직이면 바로 다시 그리고, 100% 확대(실제 픽셀), 카메라 JPEG과 좌우 분할 비교, 히스토그램 제공
 - **드래그 앤 드롭**(v0.10.0): 폴더를 놓으면 원본 폴더로 지정, RAW 파일을 놓으면 그 파일들만 변환 대상으로 선택
 - **현상 품질**(v0.10.0): 기본 필름 톤 커브(끄기 가능), Exposure(EV) -3~+3, 클리핑된 하이라이트 색 깨짐 방지, 약한 출력 샤프닝
-- **12가지 픽처 스타일**: Standard, Portrait, Landscape, Neutral, Vivid, Monochrome, Sepia, Cinematic, HDR, Soft, Dramatic, Black & White
+- **12가지 픽처 스타일**(지금 사진으로 만든 썸네일에서 선택): Standard, Portrait, Landscape, Neutral, Vivid, Monochrome, Sepia, Cinematic, HDR, Soft, Dramatic, Black & White
 - **세밀한 톤 컨트롤**: 밝기, RGB 채널 밸런스, Black/White Point(Levels), 화이트 밸런스(카메라 / 자동)
 - **RAW 현상**: Sony, Canon, Nikon, Fujifilm, Olympus/OM System, Panasonic, Pentax, Samsung, DNG (아래 표)
 - **자동 노출**(v0.11.0): 파일 안의 카메라 JPEG 밝기에 맞춰 시작점을 잡고, 없으면 장면 밝기 모델로 계산
-- **한/영 UI**(v0.11.0): 시스템 언어 자동 감지, 하단에서 전환, 모든 설정에 툴팁
+- **한/영 UI**(v0.11.0): 시스템 언어 자동 감지, 설정 영역에서 전환, 모든 설정에 툴팁
 - **임베디드 JPEG 추출(빠름)**: 카메라가 RAW 안에 넣어 둔 JPEG을 꺼내 저장. 리사이즈가 없으면 **재압축 없이 원본 그대로 복사**(무손실)
 - **출력 형식**(v0.12.0): JPEG(기본), PNG(8비트 무손실), 16비트 TIFF(비압축, f32 파이프라인에서 직접 저장), WebP(손실 압축). 품질 슬라이더는 JPEG과 WebP에 적용됩니다. 카메라 JPEG 추출은 항상 JPEG입니다.
 - **색 공간**(v0.12.0): sRGB(기본), AdobeRGB. 모든 형식에 ICC 프로파일을 넣습니다. AdobeRGB 프로파일은 공개된 원색 값으로 앱이 직접 만든 AdobeRGB 호환 프로파일입니다. rawler가 색을 sRGB 범위로 잘라 낸 뒤 변환하므로, 실제 광색역 파이프라인만큼 색이 넓어지지는 않습니다.
@@ -180,7 +181,7 @@ v0.8.7 이하는 Python(CustomTkinter + rawpy) 앱이었습니다. 예전 실행
 
 **CcooNverter** is a fast batch RAW converter for Windows and macOS. Pick a folder, press one button, and every RAW file (sub-folders included) becomes a JPEG, PNG, 16-bit TIFF or WebP. Version 0.9.0 is a complete rewrite in Rust and ships as a single portable executable (Windows) or a universal app/DMG (macOS).
 
-- **Download**: [Releases](https://github.com/marushin/CcoonVerter/releases/latest) — `CcooNverter_v0.12.0_windows_x64.exe` or `CcooNverter_v0.12.0_macos_universal.dmg`. The macOS app is not notarized: right-click → Open the first time, or run `xattr -dr com.apple.quarantine /Applications/CcooNverter.app`.
+- **Download**: [Releases](https://github.com/marushin/CcoonVerter/releases/latest) — `CcooNverter_v0.13.0_windows_x64.exe` or `CcooNverter_v0.13.0_macos_universal.dmg`. The macOS app is not notarized: right-click → Open the first time, or run `xattr -dr com.apple.quarantine /Applications/CcooNverter.app`.
 - **Languages**: Korean and English UI (auto-detected, switchable in the footer).
 - **Features**: live preview with before/after against the camera JPEG, folder and file drag and drop, default filmic tone curve, EV exposure control, 12 picture styles, brightness / RGB balance / levels / white balance, fast embedded-JPEG extraction (lossless copy when not resizing, always JPEG), output as JPEG, PNG, 16-bit TIFF (straight from the f32 pipeline) or lossy WebP with embedded ICC profiles (sRGB or AdobeRGB-compatible; rawler clips to sRGB before conversion, so AdobeRGB gains less than a true wide-gamut pipeline), file name templates (`{name}` `{date}` `{time}` `{seq}` `{camera}` `{ext}`), a list of failed files with reasons, memory-based thread count, resize and quality, EXIF preservation, presets (compatible with the Python version), multi-core batches with progress, ETA and cancel, "open output folder", optional update check.
 - **Formats**: ARW, CR2, CR3, NEF, DNG, RAF, ORF, RW2, PEF, SRW (decoded with [rawler](https://github.com/dnglab/dnglab)). Nikon High Efficiency NEF and the Sony A7 V are not yet decodable (the embedded JPEG can still be extracted); see `tests/regression/manifest.json`.
