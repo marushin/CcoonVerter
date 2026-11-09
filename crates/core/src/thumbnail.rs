@@ -40,7 +40,7 @@ fn check(cancel: &AtomicBool) -> Result<()> {
 }
 
 /// Worth decoding: complete, and with a size its bytes can account for.
-fn plausible(c: &JpegCandidate) -> bool {
+pub(crate) fn plausible(c: &JpegCandidate) -> bool {
     c.pixels() <= MAX_JPEG_PIXELS
         && (c.len as u64).saturating_mul(MAX_PIXELS_PER_BYTE) >= c.pixels()
 }

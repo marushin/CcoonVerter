@@ -182,6 +182,9 @@ fn pick_preview(candidates: &[JpegCandidate], w: u32, h: u32) -> Option<JpegCand
 pub fn preview_target_luma(file: &[u8], w: u32, h: u32) -> Option<f64> {
     let candidates = crate::embedded::find_jpegs(file);
     let c = pick_preview(&candidates, w, h)?;
+    if !crate::thumbnail::plausible(&c) {
+        return None;
+    }
     let reader = ImageReader::with_format(Cursor::new(c.bytes(file)), ImageFormat::Jpeg);
     let img = reader.decode().ok()?.into_rgb8();
     let luma = mean_luma_rgb8(img.as_raw());
