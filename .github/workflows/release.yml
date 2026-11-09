@@ -211,4 +211,5 @@ jobs:
             dist/CcooNverter_v${{ env.VERSION }}_windows_x64.exe
             dist/CcooNverter_v${{ env.VERSION }}_macos_universal.dmg
             dist/SHA256SUMS.txt
+            THIRD_PARTY_LICENSES.md
           fail_on_unmatched_files: true
