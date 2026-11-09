@@ -212,7 +212,11 @@ impl ConvertArgs {
                     )
                 })?
             }
-            None => ConvertSettings::default(),
+            // EXIF stays opt-in here (`--exif`), so existing scripts keep their output.
+            None => ConvertSettings {
+                preserve_exif: false,
+                ..ConvertSettings::default()
+            },
         };
         if let Some(v) = self.resize {
             s.resize = v;

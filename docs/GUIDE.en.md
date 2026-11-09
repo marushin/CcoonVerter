@@ -109,7 +109,7 @@ Set these in the **Output** section on the left.
 
 - **Long edge (px)**: pixels on the long side of the output. Leave it empty for the **original size**. A value larger than the original does not enlarge the photo.
 - **Quality**: applies to JPEG and WebP. 90 is usually plenty.
-- **Keep EXIF shooting data**: copies camera, lens, exposure, date, GPS and rating, as far as the file has them, into the output. **It is off by default.** Leave it off before posting photos online if you want location data removed; turn it on for files going into a photo library.
+- **Keep EXIF shooting data**: copies camera, lens, exposure, date, GPS and rating, as far as the file has them, into the output. **It is on by default.** Location data is copied too, so turn this off before posting photos online if you want it removed.
 - **Keep source file date**: gives the output the same modified date as its RAW file.
 - **If a file exists**: what to do when an output with the same name is already there: *Add suffix* (saves a new file such as `name_arw.jpg`), *Skip* or *Overwrite*.
 

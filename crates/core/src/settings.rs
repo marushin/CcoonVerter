@@ -427,7 +427,7 @@ impl Default for ConvertSettings {
             black_point: DEFAULT_BLACK_POINT,
             white_point: DEFAULT_WHITE_POINT,
             extract_embedded: false,
-            preserve_exif: false,
+            preserve_exif: true,
             on_conflict: ConflictPolicy::Suffix,
             exposure_ev: DEFAULT_EXPOSURE_EV,
             tone_curve: true,

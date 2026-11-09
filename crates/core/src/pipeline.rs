@@ -760,6 +760,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let s = ConvertSettings {
             extract_embedded: true,
+            preserve_exif: false,
             ..Default::default()
         };
         let res = convert_one(&t, &s, &cancel).unwrap();

@@ -502,11 +502,12 @@ fn exif_and_file_date_options_have_their_own_labels() {
         i18n::set_language(lang);
         let dir = tempfile::tempdir().unwrap();
         let mut h = harness(dir.path(), vec2(1240.0, 800.0), no_update_check(), 1.0);
+        assert!(app(&h).settings.preserve_exif, "EXIF is kept by default");
         h.get_by_role_and_label(Role::CheckBox, t(Key::ExifKeep))
             .click();
         settle_steps(&mut h);
         h.get_by_role_and_label(Role::CheckBox, t(Key::KeepFileDate));
-        assert!(app(&h).settings.preserve_exif);
+        assert!(!app(&h).settings.preserve_exif);
         assert!(!app(&h).settings.keep_source_date);
     }
     i18n::set_language(Lang::English);

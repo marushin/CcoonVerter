@@ -248,6 +248,7 @@ fn xmp_rating_reaches_the_output() {
         &src,
         dir.path(),
         &ConvertSettings {
+            preserve_exif: false,
             on_conflict: ConflictPolicy::Overwrite,
             ..Default::default()
         },
