@@ -1,0 +1,50 @@
+name: Regression matrix
+
+# Real camera files (about 450 MB) from raw.pixls.us, kept in actions/cache.
+# Runs on a schedule, on demand and on release tags, never on ordinary pushes.
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  regression:
+    name: Sample regression matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Restore downloaded samples
+        uses: actions/cache@v4
+        with:
+          path: tests/regression/cache
+          key: regression-samples-${{ hashFiles('tests/regression/manifest.json') }}
+          restore-keys: |
+            regression-samples-
+
+      - name: Run the matrix
+        run: >
+          cargo test --release -p ccoonverter-core --test regression_matrix
+          regression_matrix -- --ignored --nocapture --test-threads=1
+
+      - name: Upload the per-file table
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-report
+          path: target/regression/report.md
+          if-no-files-found: warn
