@@ -103,6 +103,42 @@ fn compare_with_embedded() {
     }
 }
 
+/// Colour spread of near-white pixels: mean of max(R,G,B) - min(R,G,B) over
+/// pixels with luma >= 235. Compares JPEG folders named in CCOON_HL_DIRS
+/// (`;`-separated) file by file, e.g. a v0.9.0 run against the current one.
+#[test]
+#[ignore]
+fn highlight_neutrality() {
+    let Some(dirs) = std::env::var_os("CCOON_HL_DIRS") else {
+        eprintln!("CCOON_HL_DIRS not set");
+        return;
+    };
+    let dirs: Vec<PathBuf> = std::env::split_paths(&dirs).collect();
+    println!("sample,{}", dirs.len());
+    for f in samples() {
+        let stem = f.file_stem().unwrap().to_string_lossy().into_owned();
+        let mut row = stem.clone();
+        for d in &dirs {
+            let img = image::open(d.join(format!("{stem}.jpg")))
+                .unwrap()
+                .into_rgb8();
+            let (mut spread, mut n) = (0f64, 0u64);
+            for p in img.pixels() {
+                let [r, g, b] = p.0;
+                let l = 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
+                if l >= 235.0 {
+                    spread += (r.max(g).max(b) - r.min(g).min(b)) as f64;
+                    n += 1;
+                }
+            }
+            let pct = 100.0 * n as f64 / (img.width() * img.height()) as f64;
+            let mean = if n == 0 { 0.0 } else { spread / n as f64 };
+            row.push_str(&format!(",{mean:.2} ({pct:.2}% of pixels)"));
+        }
+        println!("{row}");
+    }
+}
+
 #[test]
 #[ignore]
 fn preview_timing() {
