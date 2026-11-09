@@ -245,6 +245,16 @@ pub struct ConvertSettings {
     pub preserve_exif: bool,
     /// Output file conflict policy (new in 0.9.0).
     pub on_conflict: ConflictPolicy,
+    /// Exposure compensation in EV (-3..=+3, new in 0.10.0). Combined with
+    /// `brightness` as one linear gain: `brightness * 2^exposure_ev`.
+    #[serde(deserialize_with = "lenient::f32_")]
+    pub exposure_ev: f32,
+    /// Apply the default filmic tone curve (new in 0.10.0).
+    #[serde(deserialize_with = "lenient::bool_")]
+    pub tone_curve: bool,
+    /// Output sharpening amount (0 = off, new in 0.10.0).
+    #[serde(deserialize_with = "lenient::f32_")]
+    pub sharpen: f32,
 }
 
 impl Default for ConvertSettings {
@@ -263,6 +273,9 @@ impl Default for ConvertSettings {
             extract_embedded: false,
             preserve_exif: false,
             on_conflict: ConflictPolicy::Suffix,
+            exposure_ev: DEFAULT_EXPOSURE_EV,
+            tone_curve: true,
+            sharpen: DEFAULT_SHARPEN,
         }
     }
 }
@@ -287,6 +300,20 @@ impl ConvertSettings {
             return Err(format!(
                 "Brightness must be between {MIN_BRIGHTNESS} and {MAX_BRIGHTNESS}, got {}",
                 self.brightness
+            ));
+        }
+        if !self.exposure_ev.is_finite()
+            || !(MIN_EXPOSURE_EV..=MAX_EXPOSURE_EV).contains(&self.exposure_ev)
+        {
+            return Err(format!(
+                "Exposure must be between {MIN_EXPOSURE_EV} and {MAX_EXPOSURE_EV} EV, got {}",
+                self.exposure_ev
+            ));
+        }
+        if !self.sharpen.is_finite() || !(MIN_SHARPEN..=MAX_SHARPEN).contains(&self.sharpen) {
+            return Err(format!(
+                "Sharpen must be between {MIN_SHARPEN} and {MAX_SHARPEN}, got {}",
+                self.sharpen
             ));
         }
         if self.resize > MAX_RESIZE {
@@ -351,6 +378,13 @@ impl ConvertSettings {
         s.rgb_blue = clampf(s.rgb_blue, MIN_RGB_VALUE, MAX_RGB_VALUE, DEFAULT_RGB_VALUE);
         s.black_point = s.black_point.clamp(MIN_BLACK_POINT, MAX_BLACK_POINT);
         s.white_point = s.white_point.clamp(MIN_WHITE_POINT, MAX_WHITE_POINT);
+        s.exposure_ev = clampf(
+            s.exposure_ev,
+            MIN_EXPOSURE_EV,
+            MAX_EXPOSURE_EV,
+            DEFAULT_EXPOSURE_EV,
+        );
+        s.sharpen = clampf(s.sharpen, MIN_SHARPEN, MAX_SHARPEN, DEFAULT_SHARPEN);
         s
     }
 }
@@ -373,6 +407,9 @@ pub struct AppSettings {
     /// Check GitHub for updates on start (new in 0.9.0).
     #[serde(deserialize_with = "lenient::bool_")]
     pub check_updates: bool,
+    /// Preview panel expanded in the narrow layout (new in 0.10.0).
+    #[serde(deserialize_with = "lenient::bool_")]
+    pub preview_open: bool,
 }
 
 impl Default for AppSettings {
@@ -382,6 +419,7 @@ impl Default for AppSettings {
             output_folder: None,
             last_source: None,
             check_updates: true,
+            preview_open: false,
         }
     }
 }
@@ -543,6 +581,68 @@ mod tests {
         // Missing keys use defaults.
         assert!(!s.convert.extract_embedded);
         assert_eq!(s.convert.rgb(), [1.0, 1.0, 1.0]);
+    }
+
+    /// Files written by v0.9.0 and the Python app have none of the 0.10 keys.
+    #[test]
+    fn old_files_load_with_new_defaults() {
+        let s = AppSettings::from_json(PYTHON_SETTINGS).unwrap();
+        assert_eq!(s.convert.exposure_ev, DEFAULT_EXPOSURE_EV);
+        assert!(s.convert.tone_curve);
+        assert_eq!(s.convert.sharpen, DEFAULT_SHARPEN);
+        assert!(!s.preview_open);
+
+        let v090 = r#"{"resize": 0, "quality": 90, "brightness": 1.4,
+            "white_balance": "Auto", "style": "HDR", "rgb_red": 1.0, "rgb_green": 1.0,
+            "rgb_blue": 1.0, "black_point": 0, "white_point": 255, "extract_embedded": false,
+            "preserve_exif": true, "on_conflict": "skip", "output_folder": "", "last_source": "",
+            "check_updates": false}"#;
+        let s = AppSettings::from_json(v090).unwrap();
+        assert_eq!(s.convert.brightness, 1.4);
+        assert_eq!(s.convert.exposure_ev, 0.0);
+        assert!(s.convert.tone_curve);
+        assert_eq!(s.convert.style, PictureStyle::Hdr);
+        assert!(!s.check_updates);
+        assert!(s.convert.validate().is_ok());
+    }
+
+    #[test]
+    fn new_keys_roundtrip_and_clamp() {
+        let mut s = AppSettings::default();
+        s.convert.exposure_ev = -1.5;
+        s.convert.tone_curve = false;
+        s.convert.sharpen = 0.0;
+        s.preview_open = true;
+        let back = AppSettings::from_json(&s.to_json()).unwrap();
+        assert_eq!(back, s);
+
+        let clamped = AppSettings::from_json(
+            r#"{"exposure_ev": 9.5, "tone_curve": 0, "sharpen": -1.0, "preview_open": "yes"}"#,
+        )
+        .unwrap();
+        assert_eq!(clamped.convert.exposure_ev, MAX_EXPOSURE_EV);
+        assert!(!clamped.convert.tone_curve);
+        assert_eq!(clamped.convert.sharpen, MIN_SHARPEN);
+        assert!(clamped.preview_open);
+    }
+
+    #[test]
+    fn exposure_and_sharpen_validation() {
+        let ok = ConvertSettings {
+            exposure_ev: 3.0,
+            ..Default::default()
+        };
+        assert!(ok.validate().is_ok());
+        let bad = ConvertSettings {
+            exposure_ev: 3.1,
+            ..Default::default()
+        };
+        assert!(bad.validate().unwrap_err().contains("Exposure"));
+        let nan = ConvertSettings {
+            sharpen: f32::NAN,
+            ..Default::default()
+        };
+        assert!(nan.validate().unwrap_err().contains("Sharpen"));
     }
 
     #[test]

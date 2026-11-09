@@ -6,7 +6,7 @@
 //!        resize == 0 -> write the JPEG bytes unchanged (EXIF/orientation fixed up)
 //!        resize  > 0 -> decode -> orient -> resize -> encode(quality) -> EXIF
 //!        failure     -> fall back to RAW development (like Python)
-//!   no : develop -> RGB scale + Levels -> style -> resize -> quantise -> encode -> EXIF
+//!   no : develop_linear -> render (see `render.rs`) -> quantise -> encode -> EXIF
 //! ```
 //! The cancel flag is checked between all expensive stages.
 
@@ -23,8 +23,9 @@ use serde::Serialize;
 use crate::embedded::{self, EmbeddedPreview};
 use crate::error::{ConvertError, Result};
 use crate::exif::{self as exifmod, ExifInfo};
+use crate::render::{self, RenderParams};
 use crate::settings::{ConflictPolicy, ConvertSettings};
-use crate::{adjust, develop, encode, resize, style};
+use crate::{develop, encode, resize};
 
 /// One file to convert, with its output location already planned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,15 +178,15 @@ struct Encoded {
 }
 
 /// Lazily obtained decoder + metadata for one RAW file.
-struct RawCtx<'a> {
-    source: &'a RawSource,
+pub(crate) struct RawCtx<'a> {
+    pub(crate) source: &'a RawSource,
     decoder: Option<Box<dyn Decoder>>,
     decoder_err: Option<String>,
     metadata: Option<RawMetadata>,
 }
 
 impl<'a> RawCtx<'a> {
-    fn new(source: &'a RawSource) -> Self {
+    pub(crate) fn new(source: &'a RawSource) -> Self {
         let (decoder, decoder_err) = match rawler::get_decoder(source) {
             Ok(d) => (Some(d), None),
             Err(e) => (None, Some(e.to_string())),
@@ -203,7 +204,7 @@ impl<'a> RawCtx<'a> {
         }
     }
 
-    fn decoder(&self) -> Result<&dyn Decoder> {
+    pub(crate) fn decoder(&self) -> Result<&dyn Decoder> {
         self.decoder.as_deref().ok_or_else(|| {
             ConvertError::Decode(
                 self.decoder_err
@@ -218,7 +219,7 @@ impl<'a> RawCtx<'a> {
     }
 
     /// Orientation of the RAW (EXIF tag value 1..8), 1 if unknown.
-    fn raw_orientation(&self) -> u16 {
+    pub(crate) fn raw_orientation(&self) -> u16 {
         if let Some(o) = self
             .metadata
             .as_ref()
@@ -330,6 +331,15 @@ fn exif_for_upright(ctx: &RawCtx, embedded_jpeg: Option<&[u8]>) -> Option<Vec<u8
     }
 }
 
+/// Orientation for an embedded JPEG stream: its own EXIF value when present,
+/// otherwise the RAW's.
+pub(crate) fn embedded_orientation(data: &[u8], raw_orientation: u16) -> u16 {
+    exifmod::jpeg_exif(data)
+        .as_deref()
+        .and_then(exifmod::tiff_orientation)
+        .unwrap_or(raw_orientation)
+}
+
 fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Result<Encoded> {
     let preview = embedded::extract(ctx.source, ctx.decoder.as_deref())
         .ok_or(ConvertError::NoEmbeddedJpeg)?;
@@ -344,7 +354,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
         } => {
             let own_exif = exifmod::jpeg_exif(&data);
             let own_orientation = own_exif.as_deref().and_then(exifmod::tiff_orientation);
-            let orientation = own_orientation.unwrap_or(raw_orientation);
+            let orientation = embedded_orientation(&data, raw_orientation);
 
             if s.resize == 0 {
                 // Lossless path: keep the camera's JPEG bytes.
@@ -419,12 +429,15 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
 
 fn encode_developed(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Result<Encoded> {
     let decoder = ctx.decoder()?;
-    let mut img = develop::develop(ctx.source, decoder, s.white_balance, s.brightness, cancel)?;
+    let base = develop::develop_linear(ctx.source, decoder, cancel)?;
     check(cancel)?;
-    adjust::apply(&mut img, s.rgb(), s.black_point, s.white_point);
-    style::apply(&mut img, s.style);
-    check(cancel)?;
-    let img = resize::resize_long_edge(img, s.resize);
+    let img = render::render(
+        base.image,
+        &base.stats,
+        &RenderParams::from(s),
+        s.resize,
+        cancel,
+    )?;
     let img8 = resize::quantize(&img);
     drop(img);
     check(cancel)?;

@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! ccoonverter-cli convert <SOURCE_DIR> [--out DIR] [--resize N] [--quality Q] [--brightness F]
+//!                         [--ev EV] [--no-tone-curve] [--sharpen F]
 //!                         [--wb camera|auto] [--style NAME] [--rgb R,G,B] [--levels BP,WP]
 //!                         [--embedded] [--exif] [--threads N] [--on-conflict skip|overwrite|suffix]
 //!                         [--preset NAME] [--json]
@@ -93,6 +94,16 @@ struct ConvertArgs {
     /// Brightness multiplier 0.0-2.0 (default 1.0).
     #[arg(long, value_name = "F")]
     brightness: Option<f32>,
+    /// Exposure compensation in EV, -3..+3 (default 0). Multiplies with
+    /// brightness: brightness 2.0 equals +1 EV.
+    #[arg(long, value_name = "EV", allow_hyphen_values = true)]
+    ev: Option<f32>,
+    /// Disable the default tone curve.
+    #[arg(long)]
+    no_tone_curve: bool,
+    /// Output sharpening amount 0.0-2.0 (default 0.35, 0 = off).
+    #[arg(long, value_name = "F")]
+    sharpen: Option<f32>,
     /// White balance.
     #[arg(long, value_enum)]
     wb: Option<WbArg>,
@@ -180,6 +191,15 @@ impl ConvertArgs {
         }
         if let Some(v) = self.brightness {
             s.brightness = v;
+        }
+        if let Some(v) = self.ev {
+            s.exposure_ev = v;
+        }
+        if self.no_tone_curve {
+            s.tone_curve = false;
+        }
+        if let Some(v) = self.sharpen {
+            s.sharpen = v;
         }
         if let Some(v) = self.wb {
             s.white_balance = match v {

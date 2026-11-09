@@ -7,9 +7,13 @@
 //! - [`presets`] named presets [`preset_manager.py`]
 //! - [`scan`] RAW discovery [`scan_folder`]
 //! - [`embedded`] embedded JPEG extraction [`raw.extract_thumb()`]
-//! - [`develop`] rawler development [`raw.postprocess()`]
+//! - [`develop`] rawler development to linear RGB + exposure statistics
+//! - [`render`] the shared chain from linear base to final pixels: exposure,
+//!   highlights, tone curve, adjustments, style, resize, sharpening [new]
+//! - [`preview`] reduced-resolution sources for the GUI preview [new]
 //! - [`adjust`] RGB multipliers + Levels
 //! - [`style`] 12 picture styles [Pillow `ImageEnhance`/`ImageOps`]
+//! - [`sharpen`] output unsharp mask [new]
 //! - [`resize`] long-edge Lanczos resize, orientation, quantisation
 //! - [`exif`] EXIF reuse / builder
 //! - [`encode`] JPEG encoder
@@ -31,9 +35,12 @@ pub mod logging;
 pub mod paths;
 pub mod pipeline;
 pub mod presets;
+pub mod preview;
+pub mod render;
 pub mod resize;
 pub mod scan;
 pub mod settings;
+pub mod sharpen;
 pub mod style;
 #[doc(hidden)]
 pub mod testutil;

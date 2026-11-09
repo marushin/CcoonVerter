@@ -41,6 +41,17 @@ pub const DEFAULT_BRIGHTNESS: f32 = 1.0;
 pub const MIN_BRIGHTNESS: f32 = 0.0;
 pub const MAX_BRIGHTNESS: f32 = 2.0;
 
+// Exposure compensation in EV, applied as a linear gain together with
+// brightness: `gain = auto_exposure * brightness * 2^ev` (see `render`).
+pub const DEFAULT_EXPOSURE_EV: f32 = 0.0;
+pub const MIN_EXPOSURE_EV: f32 = -3.0;
+pub const MAX_EXPOSURE_EV: f32 = 3.0;
+
+/// Light unsharp mask applied at output resolution (0 = off).
+pub const DEFAULT_SHARPEN: f32 = 0.35;
+pub const MIN_SHARPEN: f32 = 0.0;
+pub const MAX_SHARPEN: f32 = 2.0;
+
 // Resize (long edge in pixels, 0 = original)
 pub const DEFAULT_RESIZE: u32 = 0;
 pub const MIN_RESIZE: u32 = 0;

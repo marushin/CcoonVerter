@@ -5,14 +5,20 @@
 //! -> Intermediate::{Monochrome, ThreeColor, FourColor}` with f32 data.
 //! We run every step except `SRgb`, so the result is **linear** sRGB
 //! (camera matrix applied, highlights soft-clipped by rawler around 1.0).
-//! Then, in this module:
+//! [`develop_linear`] stops there: the upright linear image plus the
+//! full-resolution statistics in [`BaseStats`]. Everything that depends on
+//! the user settings (exposure, highlights, tone curve, adjustments, style,
+//! resize, sharpening) lives in the shared chain, [`crate::render`].
 //!
-//! 1. optional auto white balance (grey world on unclipped pixels),
-//! 2. auto exposure like dcraw/LibRaw with `no_auto_bright=False`: the
-//!    per-channel 99th percentile is mapped to white (1 % highlight clip),
-//!    multiplied by the user `brightness` (LibRaw `bright`),
-//! 3. sRGB transfer curve, clamped to 0..1,
-//! 4. EXIF orientation applied to the pixels (LibRaw rotates too).
+//! The statistics, computed once at full resolution:
+//!
+//! 1. grey-world gains for the "Auto" white balance (on unclipped pixels),
+//! 2. the auto exposure point like dcraw/LibRaw with `no_auto_bright=False`:
+//!    the per-channel 99th percentile maps to white (1 % highlight clip),
+//!    for both the camera and the auto white balance.
+//!
+//! The base is rotated upright (EXIF orientation applied to the pixels,
+//! LibRaw rotates too).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,8 +28,38 @@ use rawler::rawsource::RawSource;
 use rayon::prelude::*;
 
 use crate::error::{ConvertError, Result};
-use crate::settings::WhiteBalance;
 use crate::RgbF32Image;
+
+/// Image statistics taken once at full resolution, so a downscaled preview
+/// base exposes exactly like the full-size batch output.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BaseStats {
+    /// Auto exposure white point with the camera white balance.
+    pub white_camera: f32,
+    /// Auto exposure white point after the auto white balance gains.
+    pub white_auto: f32,
+    /// Grey-world gains used by the "Auto" white balance.
+    pub auto_gains: [f32; 3],
+}
+
+impl BaseStats {
+    pub fn measure(img: &RgbF32Image) -> Self {
+        let auto_gains = grey_world_gains(img);
+        Self {
+            white_camera: percentile_white(img, AUTO_BRIGHT_CLIP),
+            white_auto: percentile_white_gained(img, AUTO_BRIGHT_CLIP, auto_gains),
+            auto_gains,
+        }
+    }
+}
+
+/// The result of RAW development: upright linear-sRGB pixels and their
+/// statistics, ready for [`crate::render::render`].
+#[derive(Debug, Clone)]
+pub struct LinearBase {
+    pub image: RgbF32Image,
+    pub stats: BaseStats,
+}
 
 /// Upper bound of the auto exposure gain (dcraw has none; this guards
 /// against amplifying noise of an all-black frame to grey mush).
@@ -39,14 +75,12 @@ fn check(cancel: &AtomicBool) -> Result<()> {
     }
 }
 
-/// Develop a RAW into a display-referred sRGB f32 image (0..1), upright.
-pub fn develop(
+/// Develop a RAW into an upright linear-sRGB image with its statistics.
+pub fn develop_linear(
     source: &RawSource,
     decoder: &dyn Decoder,
-    white_balance: WhiteBalance,
-    brightness: f32,
     cancel: &AtomicBool,
-) -> Result<RgbF32Image> {
+) -> Result<LinearBase> {
     let params = RawDecodeParams::default();
     let mut raw = decoder.raw_image(source, &params, false)?;
     check(cancel)?;
@@ -77,22 +111,18 @@ pub fn develop(
     drop(raw);
     check(cancel)?;
 
-    let mut img = intermediate_to_rgb(inter)?;
+    let img = intermediate_to_rgb(inter)?;
     check(cancel)?;
-
-    if white_balance == WhiteBalance::Auto {
-        let gains = grey_world_gains(&img);
-        log::debug!("develop: auto WB gains {gains:?}");
-        apply_gains(&mut img, gains);
-    }
-
-    let white = percentile_white(&img, AUTO_BRIGHT_CLIP);
-    let gain = auto_gain(white, brightness);
-    log::debug!("develop: auto-bright white={white:.4} gain={gain:.3} (brightness {brightness})");
-    encode_srgb(&mut img, gain);
-    check(cancel)?;
-
-    Ok(crate::resize::apply_orientation(img, orientation))
+    let stats = BaseStats::measure(&img);
+    log::debug!(
+        "develop: auto-bright white={:.4}, auto WB gains {:?}",
+        stats.white_camera,
+        stats.auto_gains
+    );
+    Ok(LinearBase {
+        image: crate::resize::apply_orientation(img, orientation),
+        stats,
+    })
 }
 
 /// Normalise white balance multipliers so the smallest of R/G/B is 1
@@ -165,23 +195,17 @@ pub fn grey_world_gains(img: &RgbF32Image) -> [f32; 3] {
     ]
 }
 
-fn apply_gains(img: &mut RgbF32Image, g: [f32; 3]) {
-    let buf: &mut [f32] = img.as_mut();
-    buf.par_chunks_mut(3 * 4096).for_each(|c| {
-        for p in c.as_chunks_mut::<3>().0 {
-            p[0] *= g[0];
-            p[1] *= g[1];
-            p[2] *= g[2];
-        }
-    });
-}
-
 const HIST_BINS: usize = 8192;
 
 /// dcraw's auto-bright white point: for each channel, the value above which
 /// `clip_fraction` of the pixels lie; the maximum over channels.
-#[allow(clippy::needless_range_loop)] // channel index into a [bin][channel] histogram
 pub fn percentile_white(img: &RgbF32Image, clip_fraction: f32) -> f32 {
+    percentile_white_gained(img, clip_fraction, [1.0, 1.0, 1.0])
+}
+
+/// [`percentile_white`] of the image multiplied by `gains` (without the copy).
+#[allow(clippy::needless_range_loop)] // channel index into a [bin][channel] histogram
+pub fn percentile_white_gained(img: &RgbF32Image, clip_fraction: f32, gains: [f32; 3]) -> f32 {
     let buf: &[f32] = img.as_ref();
     let n = buf.len() / 3;
     if n == 0 {
@@ -193,7 +217,7 @@ pub fn percentile_white(img: &RgbF32Image, clip_fraction: f32) -> f32 {
             let mut h = vec![[0u32; 3]; HIST_BINS];
             for p in c.as_chunks::<3>().0 {
                 for ch in 0..3 {
-                    let v = p[ch].clamp(0.0, 1.0);
+                    let v = (p[ch] * gains[ch]).clamp(0.0, 1.0);
                     let b = ((v * (HIST_BINS - 1) as f32) as usize).min(HIST_BINS - 1);
                     h[b][ch] += 1;
                 }
@@ -248,15 +272,6 @@ pub fn srgb_oetf(v: f32) -> f32 {
     }
 }
 
-fn encode_srgb(img: &mut RgbF32Image, gain: f32) {
-    let buf: &mut [f32] = img.as_mut();
-    buf.par_chunks_mut(4096).for_each(|c| {
-        for v in c.iter_mut() {
-            *v = srgb_oetf((*v * gain).clamp(0.0, 1.0));
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +304,21 @@ mod tests {
         assert!((auto_gain(0.25, 1.0) - 4.0).abs() < 1e-6);
         assert!((auto_gain(0.25, 0.5) - 2.0).abs() < 1e-6);
         assert_eq!(auto_gain(0.0001, 1.0), MAX_AUTO_GAIN);
+    }
+
+    #[test]
+    fn stats_cover_both_white_balances() {
+        let mut img = RgbF32Image::from_pixel(1000, 1, Rgb([0.4, 0.2, 0.1]));
+        for x in 0..20 {
+            img.put_pixel(x, 0, Rgb([0.8, 0.4, 0.2]));
+        }
+        let s = BaseStats::measure(&img);
+        // Camera WB: 99th percentile of the red channel.
+        assert!((s.white_camera - 0.8).abs() < 0.01, "{s:?}");
+        // Grey world brings red and blue to green's level, so white follows.
+        assert!((s.auto_gains[0] - 0.5).abs() < 0.01, "{s:?}");
+        assert!((s.auto_gains[2] - 2.0).abs() < 0.01, "{s:?}");
+        assert!((s.white_auto - 0.4).abs() < 0.01, "{s:?}");
     }
 
     #[test]
