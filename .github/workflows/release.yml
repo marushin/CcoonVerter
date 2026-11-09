@@ -1,0 +1,157 @@
+name: Release
+
+# Push a tag `vX.Y.Z` whose version equals [workspace.package] version in
+# Cargo.toml. Builds the Windows exe and the macOS universal DMG and publishes
+# a GitHub release whose body is the `## vX.Y.Z` section of CHANGELOG.md.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Check tag against Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$TAG_VERSION cargo=$CARGO_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $CARGO_VERSION"
+            exit 1
+          fi
+          echo "version=$CARGO_VERSION" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows x64
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p ccoonverter
+      - name: Rename
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/CcooNverter.exe "dist/CcooNverter_v${VERSION}_windows_x64.exe"
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/CcooNverter_v${{ env.VERSION }}_windows_x64.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal
+    needs: version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Add targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build .app and DMG (ad-hoc signed)
+        run: bash scripts/build_macos.sh
+      - name: Check bundle
+        run: |
+          file dist/macos/CcooNverter.app/Contents/MacOS/CcooNverter
+          codesign --verify --verbose dist/macos/CcooNverter.app
+
+      # --- Notarization (disabled until an Apple Developer ID is available) ---
+      # Required repository secrets: APPLE_CERT_P12_BASE64, APPLE_CERT_PASSWORD,
+      # APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD. See docs/03_MAC_BUILD_PLAN.md §5.
+      # Import the certificate into a temporary keychain first, e.g.:
+      #   echo "$APPLE_CERT_P12_BASE64" | base64 --decode > cert.p12
+      #   security create-keychain -p "" build.keychain
+      #   security import cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+      #   security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+      #   security list-keychains -s build.keychain; security unlock-keychain -p "" build.keychain
+      # Then sign, rebuild the DMG, notarize and staple:
+      # - name: Sign and notarize
+      #   env:
+      #     APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+      #     APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #     APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      #   run: |
+      #     codesign --force --deep --options runtime --timestamp --sign "Developer ID Application: NAME (TEAMID)" dist/macos/CcooNverter.app
+      #     # (re-create the DMG from the signed app here)
+      #     xcrun notarytool submit "dist/macos/CcooNverter_v${VERSION}_macos_universal.dmg" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD" --wait
+      #     xcrun stapler staple dist/macos/CcooNverter.app
+      #     xcrun stapler staple "dist/macos/CcooNverter_v${VERSION}_macos_universal.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/macos/CcooNverter_v${{ env.VERSION }}_macos_universal.dmg
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [version, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum CcooNverter_v* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          awk -v ver="$VERSION" '
+            /^## / {
+              if (found) exit
+              if (index($0, "## v" ver " ") == 1 || $0 == "## v" ver) { found = 1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::No '## v$VERSION' section in CHANGELOG.md"
+            exit 1
+          fi
+          cat RELEASE_NOTES.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: CcooNverter v${{ env.VERSION }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/CcooNverter_v${{ env.VERSION }}_windows_x64.exe
+            dist/CcooNverter_v${{ env.VERSION }}_macos_universal.dmg
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
