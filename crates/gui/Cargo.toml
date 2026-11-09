@@ -1,15 +1,34 @@
 [package]
 name = "ccoonverter"
-description = "CcooNverter GUI (placeholder until Phase 2)"
+description = "CcooNverter: RAW to JPG batch converter (desktop GUI)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish = false
+build = "build.rs"
 
 [[bin]]
 name = "CcooNverter"
 path = "src/main.rs"
 
+[features]
+default = []
+# Use the OpenGL (glow) renderer instead of the default wgpu renderer
+# (old GPUs, remote desktop sessions, VMs without a usable wgpu adapter).
+glow = ["eframe/glow"]
+
 [dependencies]
+ccoonverter-core.workspace = true
+eframe.workspace = true
+rfd.workspace = true
+open.workspace = true
+image.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource.workspace = true
