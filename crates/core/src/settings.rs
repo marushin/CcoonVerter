@@ -175,6 +175,117 @@ impl FromStr for ConflictPolicy {
     }
 }
 
+/// File type of the output (new in 0.12.0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum OutputFormat {
+    #[default]
+    Jpeg,
+    /// 8-bit PNG.
+    Png,
+    /// 16 bits per channel, uncompressed.
+    Tiff16,
+    /// Lossy WebP.
+    Webp,
+}
+
+impl OutputFormat {
+    pub const ALL: [OutputFormat; 4] = [
+        OutputFormat::Jpeg,
+        OutputFormat::Png,
+        OutputFormat::Tiff16,
+        OutputFormat::Webp,
+    ];
+
+    /// JSON and command line name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutputFormat::Jpeg => "jpeg",
+            OutputFormat::Png => "png",
+            OutputFormat::Tiff16 => "tiff",
+            OutputFormat::Webp => "webp",
+        }
+    }
+
+    /// Short name for display.
+    pub fn label(self) -> &'static str {
+        match self {
+            OutputFormat::Jpeg => "JPEG",
+            OutputFormat::Png => "PNG",
+            OutputFormat::Tiff16 => "TIFF 16-bit",
+            OutputFormat::Webp => "WebP",
+        }
+    }
+
+    /// File extension, without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Jpeg => "jpg",
+            OutputFormat::Png => "png",
+            OutputFormat::Tiff16 => "tif",
+            OutputFormat::Webp => "webp",
+        }
+    }
+
+    /// True when the quality setting has an effect.
+    pub fn uses_quality(self) -> bool {
+        matches!(self, OutputFormat::Jpeg | OutputFormat::Webp)
+    }
+}
+
+impl FromStr for OutputFormat {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match normalize_name(s).as_str() {
+            "jpeg" | "jpg" => Ok(OutputFormat::Jpeg),
+            "png" => Ok(OutputFormat::Png),
+            "tiff" | "tif" | "tiff16" | "tiff16bit" => Ok(OutputFormat::Tiff16),
+            "webp" => Ok(OutputFormat::Webp),
+            _ => Err(format!(
+                "unknown output format '{s}' (expected jpeg, png, tiff or webp)"
+            )),
+        }
+    }
+}
+
+/// Colour space of the output (new in 0.12.0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum ColorSpace {
+    #[default]
+    Srgb,
+    AdobeRgb,
+}
+
+impl ColorSpace {
+    pub const ALL: [ColorSpace; 2] = [ColorSpace::Srgb, ColorSpace::AdobeRgb];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ColorSpace::Srgb => "srgb",
+            ColorSpace::AdobeRgb => "adobergb",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorSpace::Srgb => "sRGB",
+            ColorSpace::AdobeRgb => "AdobeRGB",
+        }
+    }
+}
+
+impl FromStr for ColorSpace {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match normalize_name(s).as_str() {
+            "srgb" => Ok(ColorSpace::Srgb),
+            "adobergb" | "adobe" | "argb" => Ok(ColorSpace::AdobeRgb),
+            _ => Err(format!(
+                "unknown color space '{s}' (expected srgb or adobergb)"
+            )),
+        }
+    }
+}
+
 /// Language of the user interface (new in 0.11.0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum UiLanguage {
@@ -242,6 +353,8 @@ macro_rules! string_enum_serde {
 string_enum_serde!(WhiteBalance);
 string_enum_serde!(PictureStyle);
 string_enum_serde!(UiLanguage);
+string_enum_serde!(OutputFormat);
+string_enum_serde!(ColorSpace);
 
 /// Settings that affect the conversion of each file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -291,6 +404,13 @@ pub struct ConvertSettings {
     /// Give the output the modification time of the source (new in 0.11.0).
     #[serde(deserialize_with = "lenient::bool_")]
     pub keep_source_date: bool,
+    /// Output file type (new in 0.12.0). Camera JPEG mode is always JPEG.
+    pub output_format: OutputFormat,
+    /// Output colour space (new in 0.12.0). Not applied in camera JPEG mode.
+    pub color_space: ColorSpace,
+    /// Output file name template (new in 0.12.0), see [`crate::naming`].
+    #[serde(deserialize_with = "lenient::template")]
+    pub filename_template: String,
 }
 
 impl Default for ConvertSettings {
@@ -313,11 +433,33 @@ impl Default for ConvertSettings {
             tone_curve: true,
             sharpen: DEFAULT_SHARPEN,
             keep_source_date: false,
+            output_format: OutputFormat::Jpeg,
+            color_space: ColorSpace::Srgb,
+            filename_template: crate::naming::DEFAULT_TEMPLATE.to_string(),
         }
     }
 }
 
 impl ConvertSettings {
+    /// The format that is actually written: camera JPEG mode stays JPEG.
+    pub fn effective_format(&self) -> OutputFormat {
+        if self.extract_embedded {
+            OutputFormat::Jpeg
+        } else {
+            self.output_format
+        }
+    }
+
+    /// The colour space that is actually written: camera JPEG mode keeps the
+    /// camera's pixels, so nothing is converted (a fallback development is sRGB).
+    pub fn effective_color_space(&self) -> ColorSpace {
+        if self.extract_embedded {
+            ColorSpace::Srgb
+        } else {
+            self.color_space
+        }
+    }
+
     /// RGB multipliers as an array.
     pub fn rgb(&self) -> [f32; 3] {
         [self.rgb_red, self.rgb_green, self.rgb_blue]
@@ -388,6 +530,7 @@ impl ConvertSettings {
                 self.black_point, self.white_point
             ));
         }
+        crate::naming::NameTemplate::parse(&self.filename_template).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -422,6 +565,10 @@ impl ConvertSettings {
             DEFAULT_EXPOSURE_EV,
         );
         s.sharpen = clampf(s.sharpen, MIN_SHARPEN, MAX_SHARPEN, DEFAULT_SHARPEN);
+        if let Err(e) = crate::naming::NameTemplate::parse(&s.filename_template) {
+            log::warn!("settings: ignoring file name template: {e}");
+            s.filename_template = crate::naming::DEFAULT_TEMPLATE.to_string();
+        }
         s
     }
 }
@@ -561,6 +708,14 @@ mod lenient {
         Ok(f.round().min(255.0) as u8)
     }
 
+    /// A template of the wrong JSON type must not lose the whole settings file.
+    pub fn template<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+        let v = Value::deserialize(d)?;
+        Ok(v.as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::naming::DEFAULT_TEMPLATE.to_string()))
+    }
+
     pub fn bool_<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
         let v = Value::deserialize(d)?;
         Ok(match v {
@@ -646,6 +801,97 @@ mod tests {
         assert_eq!(s.convert.style, PictureStyle::Hdr);
         assert!(!s.check_updates);
         assert!(s.convert.validate().is_ok());
+    }
+
+    /// Fresh installs, v0.11 files and Python files all have update checks on
+    /// unless the file says otherwise.
+    #[test]
+    fn update_check_defaults_to_on() {
+        assert!(AppSettings::default().check_updates);
+        assert!(AppSettings::from_json("{}").unwrap().check_updates);
+        assert!(
+            AppSettings::from_json(PYTHON_SETTINGS)
+                .unwrap()
+                .check_updates
+        );
+        let v011 = r#"{"quality": 90, "language": "ko", "preview_open": true}"#;
+        assert!(AppSettings::from_json(v011).unwrap().check_updates);
+        let off = AppSettings::from_json(r#"{"check_updates": false}"#).unwrap();
+        assert!(!off.check_updates);
+    }
+
+    #[test]
+    fn v011_files_load_with_output_defaults() {
+        let v011 = r#"{"resize": 0, "quality": 90, "brightness": 1.0,
+            "white_balance": "Auto", "style": "HDR", "extract_embedded": false,
+            "preserve_exif": true, "on_conflict": "skip", "exposure_ev": 0.5,
+            "tone_curve": true, "sharpen": 0.35, "keep_source_date": true,
+            "output_folder": "", "last_source": "", "check_updates": true,
+            "preview_open": false, "language": "en"}"#;
+        let s = AppSettings::from_json(v011).unwrap();
+        assert_eq!(s.convert.output_format, OutputFormat::Jpeg);
+        assert_eq!(s.convert.color_space, ColorSpace::Srgb);
+        assert_eq!(s.convert.filename_template, "{name}");
+        assert_eq!(s.convert.exposure_ev, 0.5);
+        assert!(s.convert.validate().is_ok());
+        // v0.11 presets have the same shape.
+        let p = crate::presets::PresetStore::from_json(
+            r#"{"old": {"resize": 2000, "style": "Vivid"}}"#,
+        )
+        .unwrap();
+        let old = p.get("old").unwrap();
+        assert_eq!(old.output_format, OutputFormat::Jpeg);
+        assert_eq!(old.color_space, ColorSpace::Srgb);
+        assert_eq!(old.filename_template, "{name}");
+    }
+
+    #[test]
+    fn output_settings_roundtrip_and_bad_values() {
+        let mut s = AppSettings::default();
+        s.convert.output_format = OutputFormat::Tiff16;
+        s.convert.color_space = ColorSpace::AdobeRgb;
+        s.convert.filename_template = "{date}_{seq}".into();
+        let json = s.to_json();
+        assert!(json.contains("\"output_format\": \"tiff\""), "{json}");
+        assert!(json.contains("\"color_space\": \"adobergb\""), "{json}");
+        assert_eq!(AppSettings::from_json(&json).unwrap(), s);
+
+        let bad = AppSettings::from_json(
+            r#"{"output_format": "bmp", "color_space": 7, "filename_template": "../{name}"}"#,
+        )
+        .unwrap();
+        assert_eq!(bad.convert.output_format, OutputFormat::Jpeg);
+        assert_eq!(bad.convert.color_space, ColorSpace::Srgb);
+        assert_eq!(bad.convert.filename_template, "{name}");
+        let wrong_type = AppSettings::from_json(r#"{"filename_template": 5}"#).unwrap();
+        assert_eq!(wrong_type.convert.filename_template, "{name}");
+    }
+
+    #[test]
+    fn camera_jpeg_mode_is_always_jpeg_srgb() {
+        let s = ConvertSettings {
+            extract_embedded: true,
+            output_format: OutputFormat::Png,
+            color_space: ColorSpace::AdobeRgb,
+            ..Default::default()
+        };
+        assert_eq!(s.effective_format(), OutputFormat::Jpeg);
+        assert_eq!(s.effective_color_space(), ColorSpace::Srgb);
+        let d = ConvertSettings {
+            extract_embedded: false,
+            ..s
+        };
+        assert_eq!(d.effective_format(), OutputFormat::Png);
+        assert_eq!(d.effective_color_space(), ColorSpace::AdobeRgb);
+    }
+
+    #[test]
+    fn template_is_validated_before_a_batch() {
+        let bad = ConvertSettings {
+            filename_template: "a/{name}".into(),
+            ..Default::default()
+        };
+        assert!(bad.validate().unwrap_err().contains("template"));
     }
 
     #[test]

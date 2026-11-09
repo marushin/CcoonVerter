@@ -28,6 +28,7 @@ use serde::Serialize;
 
 use crate::config;
 use crate::error::{ConvertError, Result};
+use crate::settings::ColorSpace;
 
 /// The subset of RAW metadata we carry into the JPEG (also shown by `cli info`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -52,6 +53,9 @@ pub struct ExifInfo {
     pub gps: Option<GpsInfo>,
     /// Rating (1..=5) from the file's XMP packet, if any.
     pub rating: Option<u32>,
+    /// Value of the EXIF ColorSpace tag for a developed output (not RAW data).
+    #[serde(skip)]
+    pub output_color_space: Option<u16>,
 }
 
 /// The GPS tags carried into the output.
@@ -125,6 +129,7 @@ impl ExifInfo {
             }),
             gps: e.gps.as_ref().and_then(GpsInfo::from_rawler),
             rating: md.rating.filter(|r| (1..=5).contains(r)),
+            output_color_space: None,
         }
     }
 }
@@ -198,19 +203,21 @@ fn parse_rating(s: &[u8]) -> Option<u32> {
     (1..=5).contains(&v).then_some(v)
 }
 
-/// Adobe XMP packet carrying only the rating.
+/// XMP packet carrying only the rating.
+pub fn xmp_rating_xml(rating: u32) -> String {
+    format!(
+        "<?xpacket begin='\u{feff}' id='W5M0MpCehiHzreSzNTczkc9d'?>\
+         <x:xmpmeta xmlns:x='adobe:ns:meta/'>\
+         <rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>\
+         <rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmp:Rating='{rating}'/>\
+         </rdf:RDF></x:xmpmeta><?xpacket end='w'?>"
+    )
+}
+
+/// Adobe's APP1 segment form of [`xmp_rating_xml`].
 fn xmp_rating_packet(rating: u32) -> Vec<u8> {
     let mut seg = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
-    seg.extend_from_slice(
-        format!(
-            "<?xpacket begin='\u{feff}' id='W5M0MpCehiHzreSzNTczkc9d'?>\
-             <x:xmpmeta xmlns:x='adobe:ns:meta/'>\
-             <rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>\
-             <rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmp:Rating='{rating}'/>\
-             </rdf:RDF></x:xmpmeta><?xpacket end='w'?>"
-        )
-        .as_bytes(),
-    );
+    seg.extend_from_slice(xmp_rating_xml(rating).as_bytes());
     seg
 }
 
@@ -402,6 +409,13 @@ fn info_fields(info: &ExifInfo, orientation: u16) -> Vec<Field> {
     if let Some(g) = &info.gps {
         fields.extend(gps_fields(g));
     }
+    if let Some(v) = info.output_color_space {
+        fields.push(Field {
+            tag: Tag::ColorSpace,
+            ifd_num: In::PRIMARY,
+            value: Value::Short(vec![v]),
+        });
+    }
     if let Some(r) = info.rating {
         fields.push(Field {
             tag: TAG_RATING,
@@ -515,23 +529,91 @@ impl TiffCursor<'_> {
     }
 }
 
-/// Byte position of the Orientation SHORT value in IFD0, if present.
-fn orientation_value_pos(tiff: &[u8]) -> Option<(usize, bool)> {
-    let le = match tiff.get(0..4)? {
-        b"II*\0" => true,
-        b"MM\0*" => false,
-        _ => return None,
-    };
-    let c = TiffCursor { buf: tiff, le };
-    let ifd0 = c.u32(4)? as usize;
-    let count = c.u16(ifd0)? as usize;
-    for i in 0..count.min(512) {
-        let e = ifd0 + 2 + i * 12;
-        if c.u16(e)? == 0x0112 && c.u16(e + 2)? == 3 {
-            return Some((e + 8, le));
+/// Most entries looked at in one directory of an untrusted payload.
+const MAX_IFD_SCAN: usize = 512;
+
+fn tiff_endian(tiff: &[u8]) -> Option<bool> {
+    match tiff.get(0..4)? {
+        b"II*\0" => Some(true),
+        b"MM\0*" => Some(false),
+        _ => None,
+    }
+}
+
+/// Byte position of the 12-byte entry `tag` of the directory at `ifd`, with
+/// its whole entry inside the buffer.
+fn find_entry(c: &TiffCursor, ifd: usize, tag: u16) -> Option<usize> {
+    let count = c.u16(ifd)? as usize;
+    for i in 0..count.min(MAX_IFD_SCAN) {
+        let e = ifd.checked_add(2 + i * 12)?;
+        c.buf.get(e..e.checked_add(12)?)?;
+        if c.u16(e)? == tag {
+            return Some(e);
         }
     }
     None
+}
+
+/// Byte position of the Orientation SHORT value in IFD0, if present.
+fn orientation_value_pos(tiff: &[u8]) -> Option<(usize, bool)> {
+    let le = tiff_endian(tiff)?;
+    let c = TiffCursor { buf: tiff, le };
+    let ifd0 = c.u32(4)? as usize;
+    let e = find_entry(&c, ifd0, 0x0112)?;
+    (c.u16(e + 2)? == 3).then_some((e + 8, le))
+}
+
+/// EXIF ColorSpace value for an output space: 1 = sRGB, 0xFFFF = uncalibrated
+/// (the value used for AdobeRGB, whose ICC profile carries the definition).
+pub fn exif_color_space(space: ColorSpace) -> u16 {
+    match space {
+        ColorSpace::Srgb => 1,
+        ColorSpace::AdobeRgb => 0xFFFF,
+    }
+}
+
+/// Make ColorSpace (and the interoperability index, when present) of an
+/// existing payload describe `space`: the camera's values describe its own
+/// JPEG, not our pixels. Returns true if ColorSpace was found and patched.
+pub fn set_tiff_color_space(tiff: &mut [u8], space: ColorSpace) -> bool {
+    let Some(le) = tiff_endian(tiff) else {
+        return false;
+    };
+    let c = TiffCursor { buf: tiff, le };
+    let Some(exif_ifd) = c
+        .u32(4)
+        .and_then(|ifd0| find_entry(&c, ifd0 as usize, 0x8769))
+        .and_then(|e| c.u32(e + 8))
+    else {
+        return false;
+    };
+    let exif_ifd = exif_ifd as usize;
+    let color = find_entry(&c, exif_ifd, 0xA001).filter(|e| c.u16(e + 2) == Some(3));
+    // InteropIFD: tag 1 is an inline "R98\0" or "R03\0" (type ASCII, count 4).
+    let interop = find_entry(&c, exif_ifd, 0xA005)
+        .and_then(|e| c.u32(e + 8))
+        .and_then(|ifd| find_entry(&c, ifd as usize, 1))
+        .filter(|e| c.u16(e + 2) == Some(2) && c.u32(e + 4) == Some(4));
+    let value = exif_color_space(space);
+    let bytes = if le {
+        value.to_le_bytes()
+    } else {
+        value.to_be_bytes()
+    };
+    if let Some(e) = interop {
+        let index: &[u8; 4] = match space {
+            ColorSpace::Srgb => b"R98\0",
+            ColorSpace::AdobeRgb => b"R03\0",
+        };
+        tiff[e + 8..e + 12].copy_from_slice(index);
+    }
+    match color {
+        Some(e) => {
+            tiff[e + 8..e + 10].copy_from_slice(&bytes);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Orientation tag (0x0112) of a TIFF/EXIF payload.
@@ -582,6 +664,7 @@ mod tests {
             lens_spec: Some([(35, 1), (35, 1), (18, 10), (18, 10)]),
             gps: Some(sample_gps()),
             rating: Some(4),
+            output_color_space: None,
         }
     }
 
@@ -730,6 +813,63 @@ mod tests {
         assert_eq!(tiff_orientation(&no_orient), Some(3));
         assert!(set_tiff_orientation(&mut no_orient, 1));
         assert!(!set_tiff_orientation(&mut [0u8; 4], 1));
+    }
+
+    /// An Orientation entry cut off by the end of the payload used to panic
+    /// in the in-place patch.
+    #[test]
+    fn orientation_entry_at_the_end_of_the_buffer_does_not_panic() {
+        let mut t = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0".to_vec();
+        assert!(!set_tiff_orientation(&mut t, 1));
+        assert_eq!(tiff_orientation(&t), None);
+        // Exactly enough bytes for the whole entry is still patched.
+        t.extend_from_slice(&[1, 0, 0, 0, 6, 0, 0, 0]);
+        assert_eq!(tiff_orientation(&t), Some(6));
+        assert!(set_tiff_orientation(&mut t, 1));
+        assert_eq!(tiff_orientation(&t), Some(1));
+    }
+
+    #[test]
+    fn colour_space_is_patched_in_camera_payloads() {
+        let color = Field {
+            tag: Tag::ColorSpace,
+            ifd_num: In::PRIMARY,
+            value: Value::Short(vec![1]),
+        };
+        let interop = Field {
+            tag: Tag::InteroperabilityIndex,
+            ifd_num: In::PRIMARY,
+            value: Value::Ascii(vec![b"R98".to_vec()]),
+        };
+        let make = ascii(Tag::Make, "X");
+        for le in [true, false] {
+            let mut w = Writer::new();
+            w.push_field(&make);
+            w.push_field(&color);
+            w.push_field(&interop);
+            let mut cur = Cursor::new(Vec::new());
+            w.write(&mut cur, le).unwrap();
+            let mut tiff = cur.into_inner();
+            assert!(set_tiff_color_space(&mut tiff, ColorSpace::AdobeRgb));
+            let ex = ::exif::Reader::new().read_raw(tiff.clone()).unwrap();
+            let value = |ex: &::exif::Exif| {
+                ex.get_field(Tag::ColorSpace, In::PRIMARY)
+                    .unwrap()
+                    .value
+                    .get_uint(0)
+            };
+            assert_eq!(value(&ex), Some(0xFFFF));
+            let idx = ex
+                .get_field(Tag::InteroperabilityIndex, In::PRIMARY)
+                .unwrap();
+            assert_eq!(idx.display_value().to_string(), "\"R03\"");
+            assert!(set_tiff_color_space(&mut tiff, ColorSpace::Srgb));
+            let ex = ::exif::Reader::new().read_raw(tiff).unwrap();
+            assert_eq!(value(&ex), Some(1));
+        }
+        let mut built = build_exif(&ExifInfo::default(), 1).unwrap();
+        assert!(!set_tiff_color_space(&mut built, ColorSpace::AdobeRgb));
+        assert!(!set_tiff_color_space(&mut [0u8; 3], ColorSpace::Srgb));
     }
 
     #[test]

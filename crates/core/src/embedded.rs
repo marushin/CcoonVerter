@@ -44,17 +44,20 @@ fn be16(buf: &[u8], pos: usize) -> Option<usize> {
 
 /// Parse a JPEG stream that starts with SOI at `start`. Returns the candidate
 /// if the stream is complete (EOI found) and uses a supported frame type.
-fn parse_stream(buf: &[u8], start: usize) -> Option<JpegCandidate> {
+/// Every byte walked is charged to `budget`; an empty budget ends the walk.
+fn parse_stream(buf: &[u8], start: usize, budget: &mut usize) -> Option<JpegCandidate> {
     let n = buf.len();
     let mut pos = start + 2; // after SOI
     let mut frame: Option<(u8, u32, u32)> = None;
     loop {
+        *budget = budget.checked_sub(4)?;
         // Expect a marker; skip fill bytes.
         if *buf.get(pos)? != 0xFF {
             return None;
         }
         while pos < n && buf[pos] == 0xFF {
             pos += 1;
+            *budget = budget.checked_sub(1)?;
         }
         let marker = *buf.get(pos)?;
         pos += 1;
@@ -103,6 +106,7 @@ fn parse_stream(buf: &[u8], start: usize) -> Option<JpegCandidate> {
             frame?;
             loop {
                 let rel = buf.get(pos..)?.iter().position(|&b| b == 0xFF)?;
+                *budget = budget.checked_sub(rel + 2)?;
                 pos += rel;
                 let next = *buf.get(pos + 1)?;
                 match next {
@@ -115,11 +119,24 @@ fn parse_stream(buf: &[u8], start: usize) -> Option<JpegCandidate> {
     }
 }
 
+/// Streams kept from one file. Cameras store a handful.
+const MAX_CANDIDATES: usize = 4096;
+
+/// Work allowed for walking streams: this many passes over the file, plus a
+/// floor for small files. A file made of unfinished streams would otherwise
+/// walk to its end from every `FF D8 FF`, quadratic in the file size.
+const SCAN_PASSES: usize = 32;
+const SCAN_FLOOR: usize = 1 << 20;
+
 /// Find every complete, supported JPEG stream in `buf`.
 pub fn find_jpegs(buf: &[u8]) -> Vec<JpegCandidate> {
     let mut out = Vec::new();
+    let mut budget = buf
+        .len()
+        .saturating_mul(SCAN_PASSES)
+        .saturating_add(SCAN_FLOOR);
     let mut i = 0usize;
-    while i + 3 <= buf.len() {
+    while i + 3 <= buf.len() && out.len() < MAX_CANDIDATES && budget > 0 {
         let rel = match buf[i..].iter().position(|&b| b == 0xFF) {
             Some(r) => r,
             None => break,
@@ -129,7 +146,7 @@ pub fn find_jpegs(buf: &[u8]) -> Vec<JpegCandidate> {
             break;
         }
         if buf[i + 1] == 0xD8 && buf[i + 2] == 0xFF {
-            if let Some(c) = parse_stream(buf, i) {
+            if let Some(c) = parse_stream(buf, i, &mut budget) {
                 if header_ok(c.bytes(buf), c.width, c.height) {
                     out.push(c);
                 }
@@ -258,6 +275,36 @@ pub(crate) mod tests {
         let best = largest_jpeg_in(&blob).unwrap();
         assert_eq!((best.width, best.height), (40, 30));
         assert_eq!(best.len, j.len());
+    }
+
+    /// Unfinished streams one after another used to cost a walk to the end of
+    /// the file from each of them.
+    #[test]
+    fn unfinished_streams_cannot_make_the_scan_quadratic() {
+        let sof = [
+            0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x01, 0x11,
+            0x00, 0xFF, 0xDA, 0x00, 0x02,
+        ];
+        let blob: Vec<u8> = sof.iter().copied().cycle().take(32 << 20).collect();
+        let start = std::time::Instant::now();
+        assert!(find_jpegs(&blob).is_empty());
+        assert!(
+            start.elapsed().as_secs() < 30,
+            "scan took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn scan_budget_does_not_hide_real_previews() {
+        // Many false starts first, a real JPEG after them: still found.
+        let mut blob = vec![0x11u8; 4096];
+        for _ in 0..2000 {
+            blob.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0x00, 0x12]);
+        }
+        blob.extend_from_slice(&tiny_jpeg(64, 48, [9, 9, 200]));
+        let best = largest_jpeg_in(&blob).unwrap();
+        assert_eq!((best.width, best.height), (64, 48));
     }
 
     #[test]

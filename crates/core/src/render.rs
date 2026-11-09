@@ -25,9 +25,10 @@ use std::sync::OnceLock;
 
 use rayon::prelude::*;
 
+use crate::color;
 use crate::develop::{srgb_oetf, BaseStats};
 use crate::error::{ConvertError, Result};
-use crate::settings::{ConvertSettings, PictureStyle, WhiteBalance};
+use crate::settings::{ColorSpace, ConvertSettings, PictureStyle, WhiteBalance};
 use crate::{adjust, resize, sharpen, style, RgbF32Image};
 
 /// Everything the chain needs from the settings (no file or output options).
@@ -42,6 +43,7 @@ pub struct RenderParams {
     pub white_point: u8,
     pub style: PictureStyle,
     pub sharpen: f32,
+    pub color_space: ColorSpace,
 }
 
 impl From<&ConvertSettings> for RenderParams {
@@ -56,6 +58,17 @@ impl From<&ConvertSettings> for RenderParams {
             white_point: s.white_point,
             style: s.style,
             sharpen: s.sharpen,
+            color_space: s.effective_color_space(),
+        }
+    }
+}
+
+impl RenderParams {
+    /// Parameters for an sRGB display, whatever the output colour space is.
+    pub fn for_display(s: &ConvertSettings) -> Self {
+        Self {
+            color_space: ColorSpace::Srgb,
+            ..Self::from(s)
         }
     }
 }
@@ -164,9 +177,29 @@ fn tone_lut(tone: bool) -> &'static [f32] {
     }
 }
 
+/// Interpolated between the table's entries, so a 16-bit output is not
+/// posterised in the shadows by the table's own steps.
 #[inline]
 fn lut_lookup(lut: &[f32], x: f32) -> f32 {
-    lut[(x.clamp(0.0, 1.0) * (LUT_SIZE - 1) as f32 + 0.5) as usize]
+    let pos = x.clamp(0.0, 1.0) * (LUT_SIZE - 1) as f32;
+    let i = (pos as usize).min(LUT_SIZE - 2);
+    let t = pos - i as f32;
+    lut[i] + t * (lut[i + 1] - lut[i])
+}
+
+/// Tone curve as a linear to linear mapping. The curve is defined on
+/// sRGB-encoded values; going through this keeps the tonality of every output
+/// space the same as the sRGB one.
+fn linear_tone_lut() -> &'static [f32] {
+    static LUT: OnceLock<Vec<f32>> = OnceLock::new();
+    LUT.get_or_init(|| {
+        (0..LUT_SIZE)
+            .map(|i| {
+                let x = i as f32 / (LUT_SIZE - 1) as f32;
+                color::srgb_eotf(tone_curve(srgb_oetf(x)))
+            })
+            .collect()
+    })
 }
 
 /// Linear to display-referred: exposure gain, highlights, tone curve + sRGB.
@@ -177,6 +210,10 @@ pub fn apply_exposure_and_tone(img: &mut RgbF32Image, stats: &BaseStats, params:
         params.brightness,
         params.exposure_ev,
     );
+    if params.color_space == ColorSpace::AdobeRgb {
+        apply_exposure_adobe(img, gains, params.tone_curve);
+        return;
+    }
     let lut = tone_lut(params.tone_curve);
     let buf: &mut [f32] = img.as_mut();
     buf.par_chunks_mut(3 * 4096).for_each(|chunk| {
@@ -186,6 +223,30 @@ pub fn apply_exposure_and_tone(img: &mut RgbF32Image, stats: &BaseStats, params:
             let q = highlight_pixel(gained, base_max);
             for c in 0..3 {
                 px[c] = lut_lookup(lut, q[c]);
+            }
+        }
+    });
+}
+
+/// Same stage for AdobeRGB output: exposure and highlights on linear sRGB, the
+/// tone curve in linear light, then the sRGB to AdobeRGB matrix and the
+/// AdobeRGB transfer function. In-gamut colours and all neutrals land exactly
+/// where the sRGB output has them once a colour-managed viewer reads the file.
+fn apply_exposure_adobe(img: &mut RgbF32Image, gains: [f32; 3], tone: bool) {
+    let m = color::srgb_to_adobe_matrix();
+    let lut = linear_tone_lut();
+    let buf: &mut [f32] = img.as_mut();
+    buf.par_chunks_mut(3 * 4096).for_each(|chunk| {
+        for px in chunk.as_chunks_mut::<3>().0 {
+            let base_max = px[0].max(px[1]).max(px[2]);
+            let gained = [px[0] * gains[0], px[1] * gains[1], px[2] * gains[2]];
+            let mut q = highlight_pixel(gained, base_max);
+            if tone {
+                q = q.map(|v| lut_lookup(lut, v));
+            }
+            for c in 0..3 {
+                let linear = m[c][0] * q[0] + m[c][1] * q[1] + m[c][2] * q[2];
+                px[c] = color::adobe_oetf(linear);
             }
         }
     });
@@ -443,6 +504,81 @@ mod tests {
     fn mean(img: &RgbF32Image) -> f32 {
         let b: &[f32] = img.as_ref();
         b.iter().sum::<f32>() / b.len() as f32
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)] // parallel indexing of matrix row and channel
+    fn adobe_output_is_the_same_colour_as_srgb_output() {
+        let mut base = RgbF32Image::new(64, 64);
+        for (x, y, p) in base.enumerate_pixels_mut() {
+            *p = Rgb([
+                x as f32 / 70.0,
+                y as f32 / 70.0,
+                ((x * y) % 31) as f32 / 40.0,
+            ]);
+        }
+        let cancel = AtomicBool::new(false);
+        let s = stats(0.7);
+        let flat = RenderParams {
+            sharpen: 0.0,
+            ..params()
+        };
+        let adobe = RenderParams {
+            color_space: ColorSpace::AdobeRgb,
+            ..flat.clone()
+        };
+        let a = render(base.clone(), &s, &flat, 0, &cancel).unwrap();
+        let b = render(base, &s, &adobe, 0, &cancel).unwrap();
+        let m = color::srgb_to_adobe_matrix();
+        let mut changed = 0;
+        for (pa, pb) in a.pixels().zip(b.pixels()) {
+            let lin = pa.0.map(color::srgb_eotf);
+            for c in 0..3 {
+                let want =
+                    color::adobe_oetf(m[c][0] * lin[0] + m[c][1] * lin[1] + m[c][2] * lin[2]);
+                assert!((want - pb.0[c]).abs() < 3e-3, "{pa:?} {pb:?}");
+            }
+            if (pa.0[1] - pb.0[1]).abs() > 1e-3 {
+                changed += 1;
+            }
+        }
+        assert!(changed > 100, "encoding must differ: {changed}");
+    }
+
+    #[test]
+    fn adobe_neutrals_stay_neutral_with_the_same_luminance() {
+        let base = RgbF32Image::from_pixel(8, 8, Rgb([0.18, 0.18, 0.18]));
+        let cancel = AtomicBool::new(false);
+        let s = stats(1.0);
+        let adobe = RenderParams {
+            color_space: ColorSpace::AdobeRgb,
+            sharpen: 0.0,
+            ..params()
+        };
+        let flat = RenderParams {
+            sharpen: 0.0,
+            ..params()
+        };
+        let a = render(base.clone(), &s, &adobe, 0, &cancel).unwrap();
+        let b = render(base, &s, &flat, 0, &cancel).unwrap();
+        let p = a.get_pixel(0, 0).0;
+        assert!(
+            (p[0] - p[1]).abs() < 1e-5 && (p[1] - p[2]).abs() < 1e-5,
+            "{p:?}"
+        );
+        let la = p[0].powf(color::ADOBE_GAMMA);
+        let lb = color::srgb_eotf(b.get_pixel(0, 0).0[0]);
+        assert!((la - lb).abs() < 1e-3, "{la} {lb}");
+    }
+
+    #[test]
+    fn display_params_are_srgb_for_adobe_output() {
+        let s = ConvertSettings {
+            color_space: ColorSpace::AdobeRgb,
+            ..Default::default()
+        };
+        assert_eq!(RenderParams::from(&s).color_space, ColorSpace::AdobeRgb);
+        assert_eq!(RenderParams::for_display(&s).color_space, ColorSpace::Srgb);
     }
 
     #[test]

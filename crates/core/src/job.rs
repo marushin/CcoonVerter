@@ -13,12 +13,15 @@ use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use rawler::decoders::RawDecodeParams;
+use rawler::rawsource::RawSource;
 use rayon::prelude::*;
 use serde::Serialize;
+use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
-use crate::error::ConvertError;
+use crate::error::{ConvertError, FailureKind};
 use crate::pipeline::{convert_one, ConvertOutcome, FileTask, Method};
-use crate::settings::ConvertSettings;
+use crate::settings::{ConvertSettings, OutputFormat};
 
 /// Final state of one file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -46,6 +49,12 @@ pub struct FileResult {
     /// Error message for failures; note for fallbacks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Broad reason, for failed files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<FailureKind>,
+    /// The failed file holds a camera JPEG that camera JPEG mode can extract.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub camera_jpeg_available: bool,
     pub duration_ms: u64,
 }
 
@@ -90,17 +99,149 @@ pub struct BatchSummary {
     pub results: Vec<FileResult>,
 }
 
-/// Default worker count. Developing a 24-60 MP RAW needs roughly 1-1.5 GB
-/// of RAM per file, so the develop path is capped; embedded extraction is
-/// light and uses every core.
-pub fn default_threads(settings: &ConvertSettings) -> usize {
-    let cores = std::thread::available_parallelism()
+fn cores() -> usize {
+    std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4);
+        .unwrap_or(4)
+}
+
+/// Peak memory per pixel while developing, measured on real files
+/// (`docs/V0.12_REPORT.md`): raw sensor data, demosaic and linear buffers.
+pub const DEVELOP_BYTES_PER_PIXEL: u64 = 44;
+/// Extra per pixel for a full-size 16-bit TIFF (sample and file buffers).
+const TIFF_BYTES_PER_PIXEL: u64 = 12;
+/// Peak unrelated to the image size (metering preview, decoder state).
+const FIXED_BYTES_PER_FILE: u64 = 64 * 1024 * 1024;
+/// Share of the available memory a batch may plan to use.
+const MEMORY_BUDGET_PERCENT: u64 = 75;
+/// Largest files looked at when estimating the largest image.
+const SIZE_SAMPLES: usize = 3;
+
+/// Peak bytes to expect while converting one image of `pixels` read from a
+/// file of `file_bytes` (memory-mapped, so it counts).
+pub fn estimate_file_memory(pixels: u64, file_bytes: u64, full_size_tiff: bool) -> u64 {
+    let per_pixel = DEVELOP_BYTES_PER_PIXEL
+        + if full_size_tiff {
+            TIFF_BYTES_PER_PIXEL
+        } else {
+            0
+        };
+    pixels
+        .saturating_mul(per_pixel)
+        .saturating_add(file_bytes)
+        .saturating_add(FIXED_BYTES_PER_FILE)
+}
+
+/// How many files fit in memory at once: at least 1, at most `cores`.
+pub fn memory_threads(cores: usize, available_bytes: u64, per_file_bytes: u64) -> usize {
+    let budget = available_bytes / 100 * MEMORY_BUDGET_PERCENT;
+    let fit = budget / per_file_bytes.max(1);
+    (fit.min(cores as u64) as usize).max(1)
+}
+
+/// Why a batch runs on this many threads (also logged).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadPlan {
+    pub threads: usize,
+    pub cores: usize,
+    /// Available memory, `None` if the OS did not report it or it is unused.
+    pub available_bytes: Option<u64>,
+    pub largest_pixels: u64,
+    pub per_file_bytes: u64,
+}
+
+impl ThreadPlan {
+    fn describe(&self) -> String {
+        match self.available_bytes {
+            Some(avail) => format!(
+                "{} threads: {} cores, {} MB available, largest image {:.1} MP, \
+                 about {} MB per file",
+                self.threads,
+                self.cores,
+                avail / 1_048_576,
+                self.largest_pixels as f64 / 1e6,
+                self.per_file_bytes / 1_048_576,
+            ),
+            None => format!(
+                "{} threads: {} cores, not limited by memory",
+                self.threads, self.cores
+            ),
+        }
+    }
+}
+
+/// Pixel count of a RAW file from its header, without decoding it.
+fn probe_pixels(path: &Path) -> Option<u64> {
+    catch_unwind(|| {
+        let source = RawSource::new(path).ok()?;
+        let decoder = crate::rawguard::get_decoder(&source).ok()?;
+        let raw = decoder
+            .raw_image(&source, &RawDecodeParams::default(), true)
+            .ok()?;
+        Some(raw.width as u64 * raw.height as u64)
+    })
+    .ok()
+    .flatten()
+}
+
+/// Largest image of the batch: the pixel count of the largest files by size.
+/// Falls back to the file size itself (about one byte per pixel) for files
+/// the decoder does not understand.
+fn largest_image(tasks: &[FileTask]) -> (u64, u64) {
+    let mut sized: Vec<(u64, &Path)> = tasks
+        .iter()
+        .map(|t| {
+            let bytes = std::fs::metadata(&t.source).map(|m| m.len()).unwrap_or(0);
+            (bytes, t.source.as_path())
+        })
+        .collect();
+    sized.sort_unstable_by_key(|(b, _)| std::cmp::Reverse(*b));
+    let largest_bytes = sized.first().map_or(0, |(b, _)| *b);
+    let pixels = sized
+        .iter()
+        .take(SIZE_SAMPLES)
+        .filter_map(|(_, p)| probe_pixels(p))
+        .max()
+        .unwrap_or(largest_bytes);
+    (pixels, largest_bytes)
+}
+
+fn available_memory() -> Option<u64> {
+    let ram = || MemoryRefreshKind::nothing().with_ram();
+    let mut sys = System::new_with_specifics(RefreshKind::nothing().with_memory(ram()));
+    sys.refresh_memory_specifics(ram());
+    Some(sys.available_memory()).filter(|v| *v > 0)
+}
+
+/// Worker count when the caller does not set one. Camera JPEG extraction is
+/// light and uses every core. Development is limited by the memory the
+/// largest image needs.
+pub fn plan_threads(tasks: &[FileTask], settings: &ConvertSettings) -> ThreadPlan {
+    let cores = cores();
     if settings.extract_embedded {
-        cores
-    } else {
-        cores.clamp(1, 4)
+        return ThreadPlan {
+            threads: cores,
+            cores,
+            available_bytes: None,
+            largest_pixels: 0,
+            per_file_bytes: 0,
+        };
+    }
+    let (largest_pixels, file_bytes) = largest_image(tasks);
+    let full_tiff = settings.effective_format() == OutputFormat::Tiff16 && settings.resize == 0;
+    let per_file_bytes = estimate_file_memory(largest_pixels, file_bytes, full_tiff);
+    let available_bytes = available_memory();
+    let threads = match available_bytes {
+        Some(avail) => memory_threads(cores, avail, per_file_bytes),
+        // Without a memory reading, the old conservative cap.
+        None => cores.clamp(1, 4),
+    };
+    ThreadPlan {
+        threads,
+        cores,
+        available_bytes,
+        largest_pixels,
+        per_file_bytes,
     }
 }
 
@@ -127,6 +268,8 @@ fn run_task(task: &FileTask, settings: &ConvertSettings, cancel: &AtomicBool) ->
         width: None,
         height: None,
         message: None,
+        failure: None,
+        camera_jpeg_available: false,
         duration_ms,
     };
     match res {
@@ -160,6 +303,8 @@ fn run_task(task: &FileTask, settings: &ConvertSettings, cancel: &AtomicBool) ->
         Err(e) => {
             log::error!("{}: {e}", task.source.display());
             FileResult {
+                failure: Some(e.failure_kind()),
+                camera_jpeg_available: e.camera_jpeg_available(),
                 message: Some(e.to_string()),
                 ..base
             }
@@ -167,8 +312,7 @@ fn run_task(task: &FileTask, settings: &ConvertSettings, cancel: &AtomicBool) ->
     }
 }
 
-/// Convert all tasks. Blocks until done or cancelled; run it on a worker
-/// thread from a GUI. `threads = None` uses [`default_threads`].
+/// Convert all tasks, reporting every finished file. See [`run_batch_with`].
 pub fn run_batch(
     tasks: &[FileTask],
     settings: &ConvertSettings,
@@ -176,21 +320,57 @@ pub fn run_batch(
     progress: Option<Sender<Progress>>,
     cancel: &AtomicBool,
 ) -> Result<BatchSummary, ConvertError> {
+    run_batch_with(tasks, settings, threads, Duration::ZERO, progress, cancel)
+}
+
+/// Convert all tasks. Blocks until done or cancelled; run it on a worker
+/// thread from a GUI. `threads = None` plans the count from memory
+/// ([`plan_threads`]); an explicit count always wins.
+///
+/// `min_interval` limits progress messages to one per interval (the first and
+/// the last file are always reported), so a large batch cannot flood or fill a
+/// channel whose reader is busy. Per-file results stay complete in the summary.
+pub fn run_batch_with(
+    tasks: &[FileTask],
+    settings: &ConvertSettings,
+    threads: Option<usize>,
+    min_interval: Duration,
+    progress: Option<Sender<Progress>>,
+    cancel: &AtomicBool,
+) -> Result<BatchSummary, ConvertError> {
     settings.validate().map_err(ConvertError::InvalidSettings)?;
-    let threads = threads
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| default_threads(settings));
+    let threads = match threads.filter(|n| *n > 0) {
+        Some(n) => {
+            log::info!("Thread count set explicitly: {n}");
+            n
+        }
+        None => {
+            let plan = plan_threads(tasks, settings);
+            log::info!("Thread plan: {}", plan.describe());
+            plan.threads
+        }
+    };
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .thread_name(|i| format!("ccoon-worker-{i}"))
         .build()
         .map_err(|e| ConvertError::Panic(format!("thread pool: {e}")))?;
 
+    let tasks = pool
+        .install(|| crate::naming::plan_output_names(tasks, settings, cancel))
+        .map_err(|e| ConvertError::InvalidSettings(e.to_string()))?;
+    let tasks = tasks.as_slice();
+
     let total = tasks.len();
     let start = Instant::now();
-    let counters = Mutex::new((0usize, 0usize, 0usize, 0usize)); // done, ok, skipped, failed
+    // done, ok, skipped, failed, time of the last progress message
+    let counters = Mutex::new((0usize, 0usize, 0usize, 0usize, None::<Instant>));
     let progress = progress.map(Mutex::new);
-    log::info!("Starting batch: {total} files, {threads} threads");
+    log::info!(
+        "Starting batch: {total} files, {threads} threads, {} {}",
+        settings.effective_format().label(),
+        settings.effective_color_space().label()
+    );
 
     let mut results: Vec<(usize, FileResult)> = pool.install(|| {
         tasks
@@ -206,6 +386,8 @@ pub fn run_batch(
                         width: None,
                         height: None,
                         message: None,
+                        failure: None,
+                        camera_jpeg_available: false,
                         duration_ms: 0,
                     }
                 } else {
@@ -220,7 +402,11 @@ pub fn run_batch(
                         FileStatus::Failed => c.3 += 1,
                         FileStatus::Cancelled => {}
                     }
-                    if let Some(tx) = &progress {
+                    let due = c.0 == total || c.4.is_none_or(|last| last.elapsed() >= min_interval);
+                    if due {
+                        c.4 = Some(Instant::now());
+                    }
+                    if let (true, Some(tx)) = (due, &progress) {
                         let msg = Progress {
                             done: c.0,
                             total,
@@ -352,6 +538,104 @@ mod tests {
     }
 
     #[test]
+    fn thread_count_follows_memory_and_cores() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        // 24 MP file, 25 MB on disk.
+        let per = estimate_file_memory(24_000_000, 25_000_000, false);
+        assert_eq!(
+            per,
+            24_000_000 * DEVELOP_BYTES_PER_PIXEL + 25_000_000 + FIXED_BYTES_PER_FILE
+        );
+        // Plenty of RAM: limited by the cores, not the old cap of 4.
+        assert_eq!(memory_threads(16, 64 * GB, per), 16);
+        // 8 GB free, about 1.15 GB per file: 75 % fits 5.
+        assert_eq!(memory_threads(16, 8 * GB, per), 5);
+        // Short on memory: one file at a time, never zero.
+        assert_eq!(memory_threads(16, GB / 2, per), 1);
+        assert_eq!(memory_threads(16, 0, per), 1);
+        // A bigger image means fewer threads.
+        let big = estimate_file_memory(100_000_000, 100_000_000, false);
+        assert!(memory_threads(32, 32 * GB, big) < memory_threads(32, 32 * GB, per));
+        // A full-size 16-bit TIFF needs more than a JPEG of the same image.
+        assert!(
+            estimate_file_memory(24_000_000, 0, true) > estimate_file_memory(24_000_000, 0, false)
+        );
+        // Degenerate input cannot divide by zero or overflow.
+        assert_eq!(memory_threads(4, u64::MAX, 0), 4);
+        assert_eq!(estimate_file_memory(u64::MAX, u64::MAX, true), u64::MAX);
+    }
+
+    #[test]
+    fn thread_plan_uses_the_memory_path_for_develop_only() {
+        let (_dir, tasks, _out) = fixture_dir();
+        let embedded = ConvertSettings {
+            extract_embedded: true,
+            ..Default::default()
+        };
+        let p = plan_threads(&tasks, &embedded);
+        assert_eq!(p.threads, p.cores);
+        assert_eq!(p.per_file_bytes, 0);
+        let d = plan_threads(&tasks, &ConvertSettings::default());
+        assert!(d.threads >= 1 && d.threads <= d.cores);
+        assert!(d.per_file_bytes >= FIXED_BYTES_PER_FILE);
+        assert!(!d.describe().is_empty());
+    }
+
+    #[test]
+    fn explicit_thread_count_wins() {
+        let (_dir, tasks, _out) = fixture_dir();
+        let s = ConvertSettings {
+            on_conflict: crate::ConflictPolicy::Overwrite,
+            ..Default::default()
+        };
+        let summary = run_batch(&tasks, &s, Some(3), None, &AtomicBool::new(false)).unwrap();
+        assert_eq!(summary.threads, 3);
+    }
+
+    #[test]
+    fn progress_is_throttled_but_the_last_file_is_reported() {
+        let (_dir, tasks, _out) = fixture_dir();
+        let tasks: Vec<FileTask> = std::iter::repeat_n(tasks, 40).flatten().collect();
+        let settings = ConvertSettings {
+            extract_embedded: true,
+            on_conflict: crate::ConflictPolicy::Overwrite,
+            ..Default::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+        let summary = run_batch_with(
+            &tasks,
+            &settings,
+            Some(4),
+            Duration::from_secs(3600),
+            Some(tx),
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(summary.results.len(), 120, "results stay complete");
+        let msgs: Vec<Progress> = rx.iter().collect();
+        assert!(msgs.len() <= 2, "{} messages", msgs.len());
+        assert_eq!(msgs.last().unwrap().done, 120);
+    }
+
+    #[test]
+    fn failures_carry_a_kind() {
+        let (_dir, tasks, _out) = fixture_dir();
+        let settings = ConvertSettings {
+            extract_embedded: true,
+            ..Default::default()
+        };
+        let summary = run_batch(&tasks, &settings, Some(2), None, &AtomicBool::new(false)).unwrap();
+        let failed = summary
+            .results
+            .iter()
+            .find(|r| r.status == FileStatus::Failed)
+            .unwrap();
+        assert_eq!(failed.failure, Some(FailureKind::Unreadable));
+        assert!(!failed.camera_jpeg_available);
+    }
+
+    #[test]
     fn eta_estimate() {
         let p = Progress {
             done: 2,
@@ -368,6 +652,8 @@ mod tests {
                 width: None,
                 height: None,
                 message: None,
+                failure: None,
+                camera_jpeg_available: false,
                 duration_ms: 0,
             },
         };

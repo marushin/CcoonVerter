@@ -17,6 +17,9 @@ image.workspace = true
 rayon.workspace = true
 img-parts.workspace = true
 jpeg-encoder.workspace = true
+png.workspace = true
+webp.workspace = true
+sysinfo.workspace = true
 kamadak-exif.workspace = true
 ureq.workspace = true
 directories.workspace = true
@@ -30,4 +33,6 @@ chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Pure-Rust WebP decoder, only to read back test output.
+image = { workspace = true, features = ["webp"] }
 sha2.workspace = true

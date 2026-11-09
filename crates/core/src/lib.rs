@@ -17,7 +17,9 @@
 //! - [`sharpen`] output unsharp mask [new]
 //! - [`resize`] long-edge Lanczos resize, orientation, quantisation
 //! - [`exif`] EXIF reuse / builder
-//! - [`encode`] JPEG encoder
+//! - [`color`] output colour spaces and generated ICC profiles [new]
+//! - [`encode`] JPEG, PNG, 16-bit TIFF and WebP encoders
+//! - [`naming`] output file name templates [new]
 //! - [`pipeline`] single file conversion [`convert_file`]
 //! - [`job`] parallel batch [`run_conversion`]
 //! - [`update`] GitHub release check [`update_checker.py`]
@@ -25,6 +27,7 @@
 //! - [`error`] error type [`ConversionError`]
 
 pub mod adjust;
+pub mod color;
 pub mod config;
 pub mod develop;
 pub mod embedded;
@@ -34,10 +37,12 @@ pub mod exif;
 pub mod job;
 pub mod logging;
 pub mod metering;
+pub mod naming;
 pub mod paths;
 pub mod pipeline;
 pub mod presets;
 pub mod preview;
+pub mod rawguard;
 pub mod render;
 pub mod resize;
 pub mod scan;
@@ -57,4 +62,7 @@ pub use rawler;
 pub use error::{ConvertError, Result};
 pub use job::{run_batch, BatchSummary, FileResult, FileStatus, Progress};
 pub use pipeline::{convert_one, plan_tasks, ConvertOutcome, FileTask, Method};
-pub use settings::{AppSettings, ConflictPolicy, ConvertSettings, PictureStyle, WhiteBalance};
+pub use settings::{
+    AppSettings, ColorSpace, ConflictPolicy, ConvertSettings, OutputFormat, PictureStyle,
+    WhiteBalance,
+};

@@ -6,7 +6,8 @@
 //!        resize == 0 -> write the JPEG bytes unchanged (EXIF/orientation fixed up)
 //!        resize  > 0 -> decode -> orient -> resize -> encode(quality) -> EXIF
 //!        failure     -> fall back to RAW development (like Python)
-//!   no : develop_linear -> render (see `render.rs`) -> quantise -> encode -> EXIF
+//!   no : develop_linear -> render (see `render.rs`) -> encode in the output
+//!        format with ICC profile and EXIF (16-bit TIFF goes straight from f32)
 //! ```
 //! The cancel flag is checked between all expensive stages.
 
@@ -21,20 +22,22 @@ use rawler::rawsource::RawSource;
 use serde::Serialize;
 
 use crate::embedded::{self, EmbeddedPreview};
-use crate::error::{ConvertError, Result};
+use crate::error::{classify_unsupported, ConvertError, Result};
 use crate::exif::{self as exifmod, ExifInfo};
 use crate::render::{self, RenderParams};
-use crate::settings::{ConflictPolicy, ConvertSettings};
-use crate::{develop, encode, resize};
+use crate::settings::{ColorSpace, ConflictPolicy, ConvertSettings, OutputFormat};
+use crate::{color, develop, encode, resize};
 
 /// One file to convert, with its output location already planned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileTask {
     pub source: PathBuf,
-    /// Directory the JPEG goes into (sub-folder structure preserved).
+    /// Directory the output goes into (sub-folder structure preserved).
     pub out_dir: PathBuf,
-    /// Output file stem (without `.jpg`).
+    /// Output file stem (without the extension).
     pub stem: String,
+    /// Output extension without the dot (set from the output format).
+    pub output_ext: &'static str,
     /// Lower-case source extension, used for conflict suffixes.
     pub ext: String,
     /// True if the stem already carries the `_<ext>` suffix because another
@@ -62,6 +65,7 @@ impl FileTask {
             source: source.to_path_buf(),
             out_dir: output_root.join(rel_dir),
             stem,
+            output_ext: "jpg",
             ext,
             batch_suffixed: false,
         }
@@ -80,7 +84,7 @@ impl FileTask {
             (false, n) => format!("{with_ext}_{}", n - 1),
             (true, n) => format!("{with_ext}_{n}"),
         };
-        self.out_dir.join(format!("{name}.jpg"))
+        self.out_dir.join(format!("{name}.{}", self.output_ext))
     }
 
     /// The preferred output path.
@@ -93,34 +97,49 @@ impl FileTask {
 /// same JPEG name (e.g. `IMG_1.ARW` and `IMG_1.DNG`) are disambiguated: the
 /// first in sorted order keeps the plain name, the others get `_<ext>`.
 pub fn plan_tasks(files: &[PathBuf], source_root: &Path, output_root: &Path) -> Vec<FileTask> {
-    use std::collections::HashSet;
-    let mut seen: HashSet<(PathBuf, String)> = HashSet::new();
-    let mut out = Vec::with_capacity(files.len());
-    for f in files {
-        let mut t = FileTask::new(f, source_root, output_root);
-        let key = |t: &FileTask| {
-            (
-                t.out_dir.clone(),
-                t.primary_output()
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_default(),
-            )
-        };
-        if seen.contains(&key(&t)) {
+    let mut out: Vec<FileTask> = files
+        .iter()
+        .map(|f| FileTask::new(f, source_root, output_root))
+        .collect();
+    disambiguate(&mut out);
+    out
+}
+
+/// Give every task of a batch a unique output, in task order: the first keeps
+/// its name, later ones get `_<ext>`, and a counter if that is taken too.
+/// Linear in the batch size even when every name is the same.
+pub(crate) fn disambiguate(tasks: &mut [FileTask]) {
+    use std::collections::{HashMap, HashSet};
+    type Key = (PathBuf, String);
+    let key = |t: &FileTask| -> Key {
+        (
+            t.out_dir.clone(),
+            t.primary_output()
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default(),
+        )
+    };
+    let mut seen: HashSet<Key> = HashSet::new();
+    let mut counters: HashMap<Key, u32> = HashMap::new();
+    for t in tasks.iter_mut() {
+        if seen.contains(&key(t)) {
             t.batch_suffixed = true;
-            // Same stem and extension differing only in case: add a counter.
             let base = t.stem.clone();
-            let mut n = 1;
-            while seen.contains(&key(&t)) {
-                t.stem = format!("{base}_{n}");
-                n += 1;
+            if seen.contains(&key(t)) {
+                let slot = (t.out_dir.clone(), base.to_lowercase());
+                let n = counters.entry(slot).or_insert(1);
+                loop {
+                    t.stem = format!("{base}_{n}");
+                    *n += 1;
+                    if !seen.contains(&key(t)) {
+                        break;
+                    }
+                }
             }
         }
-        seen.insert(key(&t));
-        out.push(t);
+        seen.insert(key(t));
     }
-    out
 }
 
 /// How the output was produced.
@@ -171,7 +190,7 @@ fn check(cancel: &AtomicBool) -> Result<()> {
 }
 
 struct Encoded {
-    jpeg: Vec<u8>,
+    data: Vec<u8>,
     width: u32,
     height: u32,
     method: Method,
@@ -187,7 +206,7 @@ pub(crate) struct RawCtx<'a> {
 
 impl<'a> RawCtx<'a> {
     pub(crate) fn new(source: &'a RawSource) -> Self {
-        let (decoder, decoder_err) = match rawler::get_decoder(source) {
+        let (decoder, decoder_err) = match crate::rawguard::get_decoder(source) {
             Ok(d) => (Some(d), None),
             Err(e) => (None, Some(e.to_string())),
         };
@@ -289,12 +308,13 @@ pub fn convert_one(
     }
     let encoded = match encoded {
         Some(e) => e,
-        None => encode_developed(&ctx, settings, cancel)?,
+        None => encode_developed(&ctx, settings, cancel)
+            .map_err(|e| explain_unsupported(e, source.buf()))?,
     };
     check(cancel)?;
 
     fs::create_dir_all(&task.out_dir).map_err(|e| ConvertError::io(&task.out_dir, e))?;
-    let output = match write_output(task, settings.on_conflict, &encoded.jpeg)? {
+    let output = match write_output(task, settings.on_conflict, &encoded.data)? {
         Some(p) => p,
         None => {
             return Ok(ConvertOutcome::Skipped {
@@ -320,9 +340,26 @@ pub fn convert_one(
         method: encoded.method,
         width: encoded.width,
         height: encoded.height,
-        bytes: encoded.jpeg.len() as u64,
+        bytes: encoded.data.len() as u64,
         fell_back,
     })
+}
+
+/// Turn a decoder message about an unsupported camera or compression into an
+/// error that says whether camera JPEG mode can still get something out of
+/// the file. Nothing is converted here: the user decides.
+fn explain_unsupported(e: ConvertError, buf: &[u8]) -> ConvertError {
+    let ConvertError::Decode(detail) = &e else {
+        return e;
+    };
+    match classify_unsupported(detail) {
+        Some(kind) => ConvertError::UnsupportedRaw {
+            detail: detail.clone(),
+            kind,
+            has_camera_jpeg: embedded::largest_jpeg_in(buf).is_some(),
+        },
+        None => e,
+    }
 }
 
 /// Give `dst` the modification time of `src`.
@@ -334,19 +371,35 @@ fn copy_modified_time(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// EXIF payload for re-encoded pixels that are already upright: the
 /// embedded JPEG's EXIF, enriched with tags only the RAW has, else one built
-/// from the RAW metadata.
-fn exif_for_upright(ctx: &RawCtx, embedded_jpeg: Option<&[u8]>) -> Option<Vec<u8>> {
-    let info = ctx.exif_info();
+/// from the RAW metadata. `space` is the colour space of developed pixels;
+/// `None` leaves the colour tags alone (camera JPEG pixels).
+fn exif_for_upright(
+    ctx: &RawCtx,
+    embedded_jpeg: Option<&[u8]>,
+    space: Option<ColorSpace>,
+) -> Option<Vec<u8>> {
+    let mut info = ctx.exif_info();
+    if let (Some(i), Some(s)) = (info.as_mut(), space) {
+        i.output_color_space = Some(exifmod::exif_color_space(s));
+    }
     if let Some(mut tiff) = embedded_jpeg.and_then(exifmod::jpeg_exif) {
         if let Some(info) = &info {
             if exifmod::lacks_fields(&tiff, info) {
                 match exifmod::merge_exif(&tiff, info, 1) {
-                    Ok(merged) => return Some(merged),
+                    Ok(mut merged) => {
+                        if let Some(s) = space {
+                            exifmod::set_tiff_color_space(&mut merged, s);
+                        }
+                        return Some(merged);
+                    }
                     Err(e) => log::warn!("Could not merge EXIF: {e}"),
                 }
             }
         }
         exifmod::set_tiff_orientation(&mut tiff, 1);
+        if let Some(s) = space {
+            exifmod::set_tiff_color_space(&mut tiff, s);
+        }
         return Some(tiff);
     }
     match exifmod::build_exif(&info?, 1) {
@@ -434,7 +487,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
                     (width, height)
                 };
                 return Ok(Encoded {
-                    jpeg,
+                    data: jpeg,
                     width: w,
                     height: h,
                     method: Method::EmbeddedCopy,
@@ -448,7 +501,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
             let img = resize::resize_long_edge(img, s.resize);
             check(cancel)?;
             let exif = if s.preserve_exif {
-                exif_for_upright(ctx, Some(&data))
+                exif_for_upright(ctx, Some(&data), None)
             } else {
                 None
             };
@@ -457,7 +510,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
             Ok(Encoded {
                 width: img.width(),
                 height: img.height(),
-                jpeg,
+                data: jpeg,
                 method: Method::EmbeddedReencoded,
             })
         }
@@ -466,7 +519,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
             let img = resize::resize_long_edge(img, s.resize);
             check(cancel)?;
             let exif = if s.preserve_exif {
-                exif_for_upright(ctx, None)
+                exif_for_upright(ctx, None, None)
             } else {
                 None
             };
@@ -475,7 +528,7 @@ fn encode_embedded(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> Re
             Ok(Encoded {
                 width: img.width(),
                 height: img.height(),
-                jpeg,
+                data: jpeg,
                 method: Method::EmbeddedReencoded,
             })
         }
@@ -493,27 +546,51 @@ fn encode_developed(ctx: &RawCtx, s: &ConvertSettings, cancel: &AtomicBool) -> R
         s.resize,
         cancel,
     )?;
-    let img8 = resize::quantize(&img);
-    drop(img);
     check(cancel)?;
+    let format = s.effective_format();
+    let space = s.effective_color_space();
     let exif = if s.preserve_exif {
         let buf = ctx.source.buf();
         let embedded = embedded::largest_jpeg_in(buf).map(|c| c.bytes(buf).to_vec());
-        exif_for_upright(ctx, embedded.as_deref())
+        exif_for_upright(ctx, embedded.as_deref(), Some(space))
     } else {
         None
     };
-    let jpeg = encode::encode_rgb8(&img8, s.quality, exif.as_deref())?;
-    let jpeg = with_rating(ctx, s.preserve_exif, jpeg);
+    let rating = if s.preserve_exif {
+        ctx.exif_info().and_then(|i| i.rating)
+    } else {
+        None
+    };
+    let meta = encode::OutputMeta {
+        exif: exif.as_deref(),
+        icc: Some(color::icc_profile(space)),
+        rating,
+    };
+    let (width, height) = img.dimensions();
+    let data = if format == OutputFormat::Tiff16 {
+        // Straight from f32: this path never goes through 8 bits.
+        encode::encode_tiff16(&img, &meta)?
+    } else {
+        let img8 = resize::quantize(&img);
+        drop(img);
+        check(cancel)?;
+        match format {
+            OutputFormat::Png => encode::encode_png(&img8, &meta)?,
+            OutputFormat::Webp => encode::encode_webp(&img8, s.quality, &meta)?,
+            OutputFormat::Jpeg | OutputFormat::Tiff16 => {
+                encode::encode_jpeg(&img8, s.quality, &meta)?
+            }
+        }
+    };
     Ok(Encoded {
-        width: img8.width(),
-        height: img8.height(),
-        jpeg,
+        width,
+        height,
+        data,
         method: Method::Developed,
     })
 }
 
-/// Write the JPEG according to the conflict policy. Returns `None` if skipped.
+/// Write the output according to the conflict policy. Returns `None` if skipped.
 pub fn write_output(
     task: &FileTask,
     policy: ConflictPolicy,
@@ -569,6 +646,7 @@ pub fn write_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::FailureKind;
 
     #[test]
     fn output_path_preserves_subfolders() {
@@ -778,6 +856,173 @@ mod tests {
         };
         let kept = fs::metadata(&output).unwrap().modified().unwrap();
         assert_eq!(kept, old);
+    }
+
+    fn developed(
+        s: &ConvertSettings,
+        dng: &crate::testutil::DngSpec,
+    ) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.DNG");
+        fs::write(&src, crate::testutil::synthetic_dng(dng)).unwrap();
+        let tasks = plan_tasks(&[src], dir.path(), &dir.path().join("out"));
+        let cancel = AtomicBool::new(false);
+        let planned = crate::naming::plan_output_names(&tasks, s, &cancel).unwrap();
+        let ConvertOutcome::Converted { output, .. } =
+            convert_one(&planned[0], s, &cancel).unwrap()
+        else {
+            panic!("expected conversion");
+        };
+        (dir, output)
+    }
+
+    #[test]
+    fn every_format_writes_its_extension_and_decodes() {
+        for (format, ext) in [
+            (OutputFormat::Jpeg, "jpg"),
+            (OutputFormat::Png, "png"),
+            (OutputFormat::Tiff16, "tif"),
+            (OutputFormat::Webp, "webp"),
+        ] {
+            for space in [ColorSpace::Srgb, ColorSpace::AdobeRgb] {
+                let s = ConvertSettings {
+                    output_format: format,
+                    color_space: space,
+                    preserve_exif: true,
+                    ..Default::default()
+                };
+                let (_d, out) = developed(&s, &crate::testutil::DngSpec::default());
+                assert_eq!(out.extension().unwrap(), ext);
+                let img = image::open(&out).unwrap();
+                assert_eq!((img.width(), img.height()), (64, 48), "{ext}");
+                // PNG compresses its profile, the other formats store it raw.
+                if format != OutputFormat::Png {
+                    let bytes = fs::read(&out).unwrap();
+                    let name = match space {
+                        ColorSpace::Srgb => &b"sRGB-compatible"[..],
+                        ColorSpace::AdobeRgb => &b"AdobeRGB-compatible"[..],
+                    };
+                    assert!(
+                        bytes.windows(name.len()).any(|w| w == name),
+                        "{ext} {space:?} has no profile"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sixteen_bit_output_is_not_upscaled_from_eight_bits() {
+        // A wide ramp: an 8-bit path would give at most 256 levels, all exact
+        // multiples of 257.
+        let spec = crate::testutil::DngSpec {
+            width: 1024,
+            height: 16,
+            preview: None,
+            ..Default::default()
+        };
+        let s = ConvertSettings {
+            output_format: OutputFormat::Tiff16,
+            ..Default::default()
+        };
+        let (_d, out) = developed(&s, &spec);
+        let img = image::open(&out).unwrap();
+        assert!(
+            matches!(img, image::DynamicImage::ImageRgb16(_)),
+            "{:?}",
+            img.color()
+        );
+        let img = img.into_rgb16();
+        let values: std::collections::HashSet<u16> = img.pixels().map(|p| p.0[0]).collect();
+        let off_grid = values.iter().filter(|v| **v % 257 != 0).count();
+        assert!(values.len() > 300, "only {} levels", values.len());
+        assert!(
+            off_grid > values.len() / 2,
+            "{off_grid} of {}",
+            values.len()
+        );
+    }
+
+    #[test]
+    fn exif_survives_in_every_format_and_describes_the_colour_space() {
+        use ::exif::{In, Tag};
+        for format in OutputFormat::ALL {
+            let s = ConvertSettings {
+                output_format: format,
+                color_space: ColorSpace::AdobeRgb,
+                preserve_exif: true,
+                ..Default::default()
+            };
+            let spec = crate::testutil::DngSpec {
+                preview: None,
+                ..Default::default()
+            };
+            let (_d, out) = developed(&s, &spec);
+            let bytes = fs::read(&out).unwrap();
+            let tiff = match format {
+                OutputFormat::Tiff16 => bytes.clone(),
+                OutputFormat::Jpeg => exifmod::jpeg_exif(&bytes).unwrap(),
+                OutputFormat::Png => {
+                    let r = png::Decoder::new(std::io::Cursor::new(bytes.as_slice()))
+                        .read_info()
+                        .unwrap();
+                    r.info().exif_metadata.as_ref().unwrap().to_vec()
+                }
+                OutputFormat::Webp => {
+                    let p = bytes.windows(4).position(|w| w == b"EXIF").unwrap();
+                    let n = u32::from_le_bytes(bytes[p + 4..p + 8].try_into().unwrap()) as usize;
+                    bytes[p + 8..p + 8 + n].to_vec()
+                }
+            };
+            let ex = ::exif::Reader::new().read_raw(tiff).unwrap();
+            let f = |t: Tag| ex.get_field(t, In::PRIMARY);
+            assert_eq!(
+                f(Tag::Make).unwrap().display_value().to_string(),
+                "\"CcooNverter\""
+            );
+            assert_eq!(f(Tag::Orientation).unwrap().value.get_uint(0), Some(1));
+            assert_eq!(
+                f(Tag::ColorSpace).unwrap().value.get_uint(0),
+                Some(0xFFFF),
+                "{format:?}"
+            );
+            assert!(f(Tag::DateTimeOriginal).is_some());
+        }
+    }
+
+    #[test]
+    fn camera_jpeg_mode_ignores_output_format() {
+        let s = ConvertSettings {
+            extract_embedded: true,
+            output_format: OutputFormat::Webp,
+            color_space: ColorSpace::AdobeRgb,
+            ..Default::default()
+        };
+        let (_d, out) = developed(&s, &crate::testutil::DngSpec::default());
+        assert_eq!(out.extension().unwrap(), "jpg");
+        let b = fs::read(&out).unwrap();
+        assert_eq!(&b[..3], [0xFF, 0xD8, 0xFF]);
+        assert!(!b.windows(11).any(|w| w == b"ICC_PROFILE"));
+    }
+
+    #[test]
+    fn unsupported_errors_offer_camera_jpeg_only_when_one_exists() {
+        let jpg = crate::embedded::tests::tiny_jpeg(48, 32, [200, 100, 50]);
+        let msg = "Error: Unknown camera, model 'ILCE-7M5', make: 'SONY', mode: 'arw6'";
+        let e = explain_unsupported(ConvertError::Decode(msg.into()), &jpg);
+        assert!(e.camera_jpeg_available());
+        assert!(e.to_string().contains("Camera JPEG mode"), "{e}");
+        assert_eq!(e.failure_kind(), FailureKind::UnsupportedCamera);
+
+        let he = "Failed to decode image, possibly corrupt image: \
+                  NEF compression Some(HighEfficency) is not supported";
+        let e = explain_unsupported(ConvertError::Decode(he.into()), &[0u8; 8]);
+        assert_eq!(e.failure_kind(), FailureKind::UnsupportedCompression);
+        assert!(!e.camera_jpeg_available());
+        assert!(!e.to_string().contains("Camera JPEG mode"), "{e}");
+
+        let other = explain_unsupported(ConvertError::Decode("bad data".into()), &jpg);
+        assert!(matches!(other, ConvertError::Decode(_)));
     }
 
     #[test]

@@ -16,6 +16,10 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 rayon = "1.12.0"
 img-parts = "0.4.2"
 jpeg-encoder = "0.7.1"
+png = "0.18.1"
+# Lossy WebP: safe wrapper over libwebp (C, compiled by libwebp-sys through cc).
+webp = { version = "0.3.1", default-features = false }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 kamadak-exif = "0.6.2"
 ureq = { version = "3.5.1", features = ["json"] }
 directories = "6.0.0"

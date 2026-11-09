@@ -5,7 +5,8 @@
 //!                         [--ev EV] [--no-tone-curve] [--sharpen F]
 //!                         [--wb camera|auto] [--style NAME] [--rgb R,G,B] [--levels BP,WP]
 //!                         [--embedded] [--exif] [--threads N] [--on-conflict skip|overwrite|suffix]
-//!                         [--preset NAME] [--json]
+//!                         [--format jpeg|png|tiff|webp] [--color-space srgb|adobergb]
+//!                         [--name-template TEMPLATE] [--preset NAME] [--json]
 //! ccoonverter-cli scan <DIR> [--json]
 //! ccoonverter-cli info <RAW_FILE> [--json]
 //! ```
@@ -22,7 +23,9 @@ use ccoonverter_core::job::{self, FileStatus};
 use ccoonverter_core::logging::{self, LogOptions};
 use ccoonverter_core::paths::AppPaths;
 use ccoonverter_core::presets::PresetStore;
-use ccoonverter_core::{ConflictPolicy, ConvertSettings, PictureStyle, WhiteBalance};
+use ccoonverter_core::{
+    ColorSpace, ConflictPolicy, ConvertSettings, OutputFormat, PictureStyle, WhiteBalance,
+};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
@@ -30,7 +33,7 @@ use serde::Serialize;
 #[command(
     name = "ccoonverter-cli",
     version,
-    about = "CcooNverter command line: batch RAW (ARW/CR2/CR3/DNG/NEF) to JPEG"
+    about = "CcooNverter command line: batch RAW to JPEG, PNG, 16-bit TIFF or WebP"
 )]
 struct Cli {
     /// Verbose logging to stderr (debug level).
@@ -73,6 +76,20 @@ enum ConflictArg {
     Skip,
     Overwrite,
     Suffix,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum FormatArg {
+    Jpeg,
+    Png,
+    Tiff,
+    Webp,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ColorArg {
+    Srgb,
+    Adobergb,
 }
 
 #[derive(Args, Debug)]
@@ -118,18 +135,29 @@ struct ConvertArgs {
     #[arg(long, value_name = "BP,WP", value_parser = parse_levels)]
     levels: Option<(u8, u8)>,
     /// Use the camera's embedded JPEG instead of developing the RAW (fast).
+    /// Always writes JPEG, so it cannot be combined with --format or --color-space.
     #[arg(long)]
     embedded: bool,
-    /// Copy EXIF metadata into the JPEG.
+    /// Copy EXIF metadata into the output.
     #[arg(long)]
     exif: bool,
-    /// Give the JPEG the modification time of the RAW file.
+    /// Give the output the modification time of the RAW file.
     #[arg(long)]
     keep_date: bool,
-    /// What to do when the JPEG already exists (default: suffix).
+    /// What to do when the output already exists (default: suffix).
     #[arg(long, value_enum)]
     on_conflict: Option<ConflictArg>,
-    /// Worker threads (default: all cores for --embedded, at most 4 otherwise).
+    /// Output file format (default: jpeg).
+    #[arg(long, value_enum)]
+    format: Option<FormatArg>,
+    /// Output color space (default: srgb). The ICC profile is written to the file.
+    #[arg(long, value_enum)]
+    color_space: Option<ColorArg>,
+    /// Output file name without extension. Tokens: {name} {date} {time} {seq} {camera} {ext}.
+    #[arg(long, value_name = "TEMPLATE")]
+    name_template: Option<String>,
+    /// Worker threads (default: all cores for --embedded, otherwise as many
+    /// as fit in the available memory).
     #[arg(short = 'j', long, value_name = "N")]
     threads: Option<usize>,
     /// Print the summary as JSON on stdout.
@@ -228,6 +256,26 @@ impl ConvertArgs {
         if self.embedded {
             s.extract_embedded = true;
         }
+        if let Some(v) = self.format {
+            s.output_format = match v {
+                FormatArg::Jpeg => OutputFormat::Jpeg,
+                FormatArg::Png => OutputFormat::Png,
+                FormatArg::Tiff => OutputFormat::Tiff16,
+                FormatArg::Webp => OutputFormat::Webp,
+            };
+        }
+        if let Some(v) = self.color_space {
+            s.color_space = match v {
+                ColorArg::Srgb => ColorSpace::Srgb,
+                ColorArg::Adobergb => ColorSpace::AdobeRgb,
+            };
+        }
+        if let Some(v) = &self.name_template {
+            s.filename_template = v.clone();
+        }
+        if s.extract_embedded && (self.format.is_some() || self.color_space.is_some()) {
+            bail!("camera JPEG mode always writes the camera's JPEG: --format and --color-space cannot be used with --embedded");
+        }
         if self.exif {
             s.preserve_exif = true;
         }
@@ -272,7 +320,7 @@ fn cmd_convert(args: &ConvertArgs) -> Result<ExitCode> {
     }
     if !args.json {
         eprintln!(
-            "Converting {} file(s) -> {} [{}, style {}, wb {}, quality {}, resize {}]",
+            "Converting {} file(s) -> {} [{}, {} {}, style {}, wb {}, quality {}, resize {}]",
             tasks.len(),
             out_root.display(),
             if settings.extract_embedded {
@@ -280,6 +328,8 @@ fn cmd_convert(args: &ConvertArgs) -> Result<ExitCode> {
             } else {
                 "RAW develop"
             },
+            settings.effective_format().label(),
+            settings.effective_color_space().label(),
             settings.style,
             settings.white_balance,
             settings.quality,
@@ -428,7 +478,7 @@ fn cmd_info(file: &Path, json: bool) -> Result<ExitCode> {
             })
             .collect(),
     };
-    match get_decoder(&source) {
+    match ccoonverter_core::rawguard::get_decoder(&source) {
         Ok(dec) => {
             info.decoder = Some(format!("{:?}", dec.format_hint()));
             let params = RawDecodeParams::default();
@@ -527,7 +577,6 @@ fn cmd_info(file: &Path, json: bool) -> Result<ExitCode> {
 /// The handful of rawler items `info` needs, re-exported via the core crate's dependency.
 mod rawler_api {
     pub use ccoonverter_core::rawler::decoders::RawDecodeParams;
-    pub use ccoonverter_core::rawler::get_decoder;
     pub use ccoonverter_core::rawler::rawsource::RawSource;
 }
 
