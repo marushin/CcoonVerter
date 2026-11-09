@@ -1025,6 +1025,37 @@ mod tests {
         assert!(matches!(other, ConvertError::Decode(_)));
     }
 
+    /// The promise in the user documents: a conversion never changes the RAW,
+    /// even with the output in the same folder and every overwriting option on.
+    #[test]
+    fn the_raw_file_is_left_untouched() {
+        use crate::testutil::{synthetic_dng, DngSpec};
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.DNG");
+        fs::write(&src, synthetic_dng(&DngSpec::default())).unwrap();
+        let bytes = fs::read(&src).unwrap();
+        let modified = fs::metadata(&src).unwrap().modified().unwrap();
+        let cancel = AtomicBool::new(false);
+        for format in OutputFormat::ALL {
+            for extract_embedded in [false, true] {
+                let s = ConvertSettings {
+                    output_format: format,
+                    extract_embedded,
+                    keep_source_date: true,
+                    preserve_exif: true,
+                    on_conflict: ConflictPolicy::Overwrite,
+                    filename_template: "{name}".into(),
+                    ..Default::default()
+                };
+                let tasks = plan_tasks(std::slice::from_ref(&src), dir.path(), dir.path());
+                let planned = crate::naming::plan_output_names(&tasks, &s, &cancel).unwrap();
+                convert_one(&planned[0], &s, &cancel).unwrap();
+                assert_eq!(fs::read(&src).unwrap(), bytes, "{format:?}");
+                assert_eq!(fs::metadata(&src).unwrap().modified().unwrap(), modified);
+            }
+        }
+    }
+
     #[test]
     fn cancelled_before_start() {
         let t = FileTask::new(Path::new("/x/a.ARW"), Path::new("/x"), Path::new("/y"));

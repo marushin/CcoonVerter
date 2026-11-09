@@ -95,7 +95,12 @@ impl UiSettings {
     pub fn from_convert(s: &ConvertSettings) -> Self {
         let s = s.sanitized();
         Self {
-            resize_text: s.resize.to_string(),
+            // An empty field shows the "original size" hint; 0 stays the value.
+            resize_text: if s.resize == 0 {
+                String::new()
+            } else {
+                s.resize.to_string()
+            },
             quality: f32::from(s.quality),
             brightness: s.brightness,
             white_balance: s.white_balance,
@@ -842,6 +847,33 @@ mod tests {
             UiSettings::default().to_convert(),
             ConvertSettings::default()
         );
+    }
+
+    /// A field reading "0" means nothing to a new user: it stays empty and
+    /// shows "Original size", while the stored value and presets keep 0.
+    #[test]
+    fn original_size_is_an_empty_field_and_still_stored_as_zero() {
+        let ui = UiSettings::default();
+        assert_eq!(ui.resize_text, "");
+        assert_eq!(ui.to_convert().resize, 0);
+
+        let mut ui = UiSettings {
+            resize_text: "1500".into(),
+            ..Default::default()
+        };
+        let original = ConvertSettings {
+            resize: 0,
+            ..Default::default()
+        };
+        ui.apply_preset(&original);
+        assert_eq!(ui.resize_text, "");
+        assert_eq!(ui.to_convert(), original);
+        ui.apply_preset(&ConvertSettings {
+            resize: 2000,
+            ..Default::default()
+        });
+        assert_eq!(ui.resize_text, "2000");
+        assert_eq!(ui.to_convert().resize, 2000);
     }
 
     #[test]

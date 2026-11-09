@@ -18,6 +18,10 @@ default = []
 # Render with wgpu (DirectX 12 / Vulkan / Metal) instead of the default
 # OpenGL (glow) renderer. Adds about 10 MB to the executable.
 wgpu = ["eframe/wgpu"]
+# Diagnostic only, never part of a shipped build: open the real window, wait
+# for the preview, save what the renderer drew to a PNG and exit.
+# See src/capture.rs.
+capture = []
 
 [dependencies]
 ccoonverter-core.workspace = true

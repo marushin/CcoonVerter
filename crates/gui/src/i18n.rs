@@ -123,7 +123,7 @@ strings! {
     ExifKeep => "Keep EXIF shooting data", "촬영 정보(EXIF) 유지";
     KeepFileDate => "Keep source file date", "원본 파일 날짜 유지";
     ResizeLabel => "Long edge (px)", "긴 변 (px)";
-    ResizeHint => "0 for original", "0이면 원본 크기";
+    ResizeHint => "Original size", "원본 크기";
     QualityLabel => "Quality", "품질";
     Reset => "Reset", "초기화";
     ToneCurve => "Tone Curve", "톤 커브";
@@ -274,6 +274,7 @@ strings! {
     ZoomFit => "Fit", "맞춤";
     ZoomActual => "100%", "100%";
     ZoomLoading => "Developing at full resolution...", "원본 해상도로 현상하는 중...";
+    ZoomFailed => "100% view not available: {0}", "100% 보기를 열 수 없습니다: {0}";
     Compare => "Compare", "비교";
     Histogram => "Histogram", "히스토그램";
     CompareDeveloped => "Developed", "현상 결과";
@@ -304,7 +305,7 @@ strings! {
     TipQualityUnused => "Camera JPEGs are saved as they are, so quality only applies when a long edge is set.", "카메라 JPEG은 그대로 저장하므로, 긴 변을 지정했을 때만 품질이 적용됩니다.";
     TipExif => "Copies shooting data into the output: camera, lens, exposure, date, GPS and rating where the file has them. Not all metadata may be copied identically.", "카메라, 렌즈, 노출, 촬영 일시, GPS, 별점을 파일에 있는 만큼 결과 파일에 기록합니다. 일부 정보는 원본과 똑같이 복사되지 않을 수 있습니다.";
     TipKeepDate => "Gives the output the same modified date as its RAW file.", "결과 파일의 수정한 날짜를 RAW 파일과 같게 맞춥니다.";
-    TipResize => "Long edge of the output in pixels. 0 keeps the full size.", "결과 이미지의 긴 변 픽셀 수입니다. 0이면 원본 크기를 유지합니다.";
+    TipResize => "Long edge of the output in pixels. Leave empty to keep the original size.", "결과 이미지의 긴 변 픽셀 수입니다. 비워 두면 원본 크기를 유지합니다.";
     TipQuality => "JPEG and WebP: higher means better quality and larger files. 90 is a good default.", "JPEG과 WebP에 적용됩니다. 높을수록 화질이 좋아지고 파일이 커집니다. 보통 90이면 충분합니다.";
     TipToneCurve => "Applies a gentle film-like contrast curve, close to a camera JPEG.", "카메라 JPEG에 가까운 부드러운 S자 대비 커브를 적용합니다.";
     TipReset => "Returns the RAW adjustments below to their defaults.", "아래 RAW 조정값을 기본값으로 되돌립니다.";

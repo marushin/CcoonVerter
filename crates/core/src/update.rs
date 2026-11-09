@@ -234,6 +234,22 @@ mod tests {
         assert!(release_if_newer(rel("nope"), "0.9.0").is_err());
     }
 
+    /// Everyone on an older release must be offered 1.0.0, whatever form the
+    /// tag or their own version takes.
+    #[test]
+    fn one_point_zero_is_newer_than_every_earlier_release() {
+        for old in [
+            "0.13.0", "0.12.0", "0.11.0", "0.10.0", "0.9.0", "v0.9.0", "v.0.8.5", "0.8.7",
+        ] {
+            assert!(is_newer("v1.0.0", old), "{old}");
+            assert!(!is_newer(old, "1.0.0"), "{old}");
+        }
+        assert!(!is_newer("v1.0.0", "1.0.0"));
+        let r = release_if_newer(rel("v1.0.0"), "0.9.0").unwrap().unwrap();
+        assert_eq!(r.version, "1.0.0");
+        assert!(release_if_newer(rel("v1.0.0"), "1.0.0").unwrap().is_none());
+    }
+
     #[test]
     fn cache_is_used_within_max_age() {
         let dir = tempfile::tempdir().unwrap();

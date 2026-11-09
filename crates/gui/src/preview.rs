@@ -190,6 +190,12 @@ pub enum PreviewEvent {
         /// Camera JPEG pixels covering the same part of the picture.
         camera: Option<ColorImage>,
     },
+    /// The 100 % view cannot be shown for this file. The whole-photo preview
+    /// is not affected.
+    ZoomFailed {
+        file: PathBuf,
+        message: String,
+    },
     /// All style thumbnails of a file.
     Thumbnails {
         request: ThumbRequest,
@@ -201,6 +207,15 @@ pub enum PreviewEvent {
     },
 }
 
+/// A decode in progress.
+#[derive(Debug)]
+struct Loading {
+    file: PathBuf,
+    cancel: Arc<AtomicBool>,
+    /// Decoding for the 100 % view, not for the normal preview.
+    full_res: bool,
+}
+
 #[derive(Debug, Default)]
 struct Slots {
     scan: Option<PathBuf>,
@@ -209,14 +224,16 @@ struct Slots {
     thumbs: Option<ThumbRequest>,
     /// Drop the full-resolution image at the next opportunity.
     release_full: bool,
-    /// File being decoded and its cancel flag.
-    loading: Option<(PathBuf, Arc<AtomicBool>)>,
+    loading: Option<Loading>,
     shutdown: bool,
 }
 
 struct Shared {
     slots: Mutex<Slots>,
     cv: Condvar,
+    /// Full-resolution releases carried out, for tests.
+    #[cfg(test)]
+    full_releases: std::sync::atomic::AtomicUsize,
 }
 
 impl Shared {
@@ -238,6 +255,8 @@ impl PreviewWorker {
         let shared = Arc::new(Shared {
             slots: Mutex::new(Slots::default()),
             cv: Condvar::new(),
+            #[cfg(test)]
+            full_releases: Default::default(),
         });
         let (tx, events) = mpsc::channel();
         let worker_shared = Arc::clone(&shared);
@@ -265,10 +284,8 @@ impl PreviewWorker {
         self.next_id += 1;
         let id = self.next_id;
         let mut s = self.shared.lock();
-        if let Some((file, cancel)) = &s.loading {
-            if *file != req.file {
-                cancel.store(true, Ordering::Relaxed);
-            }
+        if let Some(l) = s.loading.as_ref().filter(|l| l.file != req.file) {
+            l.cancel.store(true, Ordering::Relaxed);
         }
         s.render = Some((id, req));
         self.shared.cv.notify_all();
@@ -280,10 +297,8 @@ impl PreviewWorker {
         self.next_id += 1;
         let id = self.next_id;
         let mut s = self.shared.lock();
-        if let Some((file, cancel)) = &s.loading {
-            if *file != req.file {
-                cancel.store(true, Ordering::Relaxed);
-            }
+        if let Some(l) = s.loading.as_ref().filter(|l| l.file != req.file) {
+            l.cancel.store(true, Ordering::Relaxed);
         }
         s.zoom = Some((id, req));
         self.shared.cv.notify_all();
@@ -292,11 +307,21 @@ impl PreviewWorker {
 
     /// Drop the full-resolution image and any pending zoom request. It uses
     /// hundreds of megabytes, so it is only kept while a 100 % view is open.
+    /// A full-resolution decode that is still running is cancelled too; a
+    /// decode for the normal preview is left alone.
     pub fn release_full(&self) {
         let mut s = self.shared.lock();
         s.zoom = None;
         s.release_full = true;
+        if let Some(l) = s.loading.as_ref().filter(|l| l.full_res) {
+            l.cancel.store(true, Ordering::Relaxed);
+        }
         self.shared.cv.notify_all();
+    }
+
+    #[cfg(test)]
+    pub fn full_releases(&self) -> usize {
+        self.shared.full_releases.load(Ordering::SeqCst)
     }
 
     /// Ask for the style thumbnails. Low priority: they run only when no
@@ -315,8 +340,8 @@ impl PreviewWorker {
     pub fn shutdown(&mut self) {
         let mut s = self.shared.lock();
         s.shutdown = true;
-        if let Some((_, cancel)) = &s.loading {
-            cancel.store(true, Ordering::Relaxed);
+        if let Some(l) = &s.loading {
+            l.cancel.store(true, Ordering::Relaxed);
         }
         self.shared.cv.notify_all();
         drop(s);
@@ -434,7 +459,11 @@ impl Worker {
                 Job::Render(id, req) => self.do_render(id, req),
                 Job::Zoom(req) => self.do_zoom(req),
                 Job::Thumbs(req) => self.do_thumbs(req),
-                Job::ReleaseFull => self.full = FullCache::default(),
+                Job::ReleaseFull => {
+                    self.full = FullCache::default();
+                    #[cfg(test)]
+                    self.shared.full_releases.fetch_add(1, Ordering::SeqCst);
+                }
             }
         }
         log::debug!("preview worker stopped");
@@ -460,9 +489,13 @@ impl Worker {
             || s.zoom.as_ref().is_some_and(|(_, z)| z.file != file)
     }
 
-    fn start_load(&self, file: &Path) -> Arc<AtomicBool> {
+    fn start_load(&self, file: &Path, full_res: bool) -> Arc<AtomicBool> {
         let cancel = Arc::new(AtomicBool::new(false));
-        self.shared.lock().loading = Some((file.to_path_buf(), Arc::clone(&cancel)));
+        self.shared.lock().loading = Some(Loading {
+            file: file.to_path_buf(),
+            cancel: Arc::clone(&cancel),
+            full_res,
+        });
         cancel
     }
 
@@ -510,7 +543,7 @@ impl Worker {
 
         // Camera JPEG first: it is fast, and doubles as a loading image.
         if self.cache[index].1.embedded.is_none() {
-            let cancel = self.start_load(&file);
+            let cancel = self.start_load(&file, false);
             let res = catch_unwind(AssertUnwindSafe(|| {
                 preview::load_embedded(&file, PREVIEW_LONG_EDGE, &cancel)
             }));
@@ -556,7 +589,7 @@ impl Worker {
                 return;
             }
             self.send(PreviewEvent::Developing { file: file.clone() });
-            let cancel = self.start_load(&file);
+            let cancel = self.start_load(&file, false);
             let res = catch_unwind(AssertUnwindSafe(|| {
                 preview::load_base(&file, PREVIEW_LONG_EDGE, &cancel)
             }));
@@ -637,7 +670,7 @@ impl Worker {
             if self.is_superseded(&file) {
                 return false;
             }
-            let cancel = self.start_load(&file);
+            let cancel = self.start_load(&file, true);
             let res = catch_unwind(AssertUnwindSafe(|| {
                 preview::load_base(&file, u32::MAX, &cancel)
             }));
@@ -653,7 +686,7 @@ impl Worker {
             if self.is_superseded(&file) {
                 return false;
             }
-            let cancel = self.start_load(&file);
+            let cancel = self.start_load(&file, true);
             let res = catch_unwind(AssertUnwindSafe(|| {
                 preview::load_embedded(&file, u32::MAX, &cancel)
             }));
@@ -694,7 +727,7 @@ impl Worker {
             (Some(_), Some(Ok(b))) => Some(Arc::clone(b)),
             (Some(_), Some(Err(msg))) => {
                 let message = short_message(msg);
-                self.send(PreviewEvent::Failed {
+                self.send(PreviewEvent::ZoomFailed {
                     file: req.file,
                     message,
                 });
@@ -706,7 +739,13 @@ impl Worker {
         let full_size = match (&base, &camera) {
             (Some(b), _) => b.full_size,
             (None, Some(c)) => c.dimensions(),
-            (None, None) => return, // no camera JPEG: the panel already says so
+            (None, None) => {
+                self.send(PreviewEvent::ZoomFailed {
+                    file: req.file,
+                    message: "no camera JPEG".into(),
+                });
+                return;
+            }
         };
         let full_size = [full_size.0, full_size.1];
         let region = zoom_region(full_size, req.center, req.view_px, req.max_side);
@@ -720,14 +759,14 @@ impl Worker {
             Ok(Ok(img)) => img,
             Ok(Err(e)) => {
                 let message = short_message(&e.to_string());
-                self.send(PreviewEvent::Failed {
+                self.send(PreviewEvent::ZoomFailed {
                     file: req.file,
                     message,
                 });
                 return;
             }
             Err(_) => {
-                self.send(PreviewEvent::Failed {
+                self.send(PreviewEvent::ZoomFailed {
                     file: req.file,
                     message: "the preview renderer panicked".into(),
                 });
@@ -1271,6 +1310,47 @@ mod tests {
                 worst
             );
         }
+    }
+
+    /// Regression: leaving the 100 % view (or starting a batch) did not stop
+    /// a full-resolution decode, which kept running and using its memory.
+    #[test]
+    fn release_full_cancels_only_a_full_resolution_decode() {
+        let w = worker();
+        for (full_res, expected) in [(true, true), (false, false)] {
+            let cancel = Arc::new(AtomicBool::new(false));
+            w.shared.lock().loading = Some(Loading {
+                file: PathBuf::from("a.CR2"),
+                cancel: Arc::clone(&cancel),
+                full_res,
+            });
+            w.release_full();
+            assert_eq!(cancel.load(Ordering::Relaxed), expected, "{full_res}");
+            w.shared.lock().loading = None;
+        }
+    }
+
+    /// Regression: a 100 % request on a file that cannot be developed sent the
+    /// event for a failed preview, so the panel waited for pixels forever.
+    #[test]
+    fn zoom_failure_is_reported_as_a_zoom_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad.NEF");
+        std::fs::write(&bad, vec![0u8; 512]).unwrap();
+        let mut w = worker();
+        w.request_zoom(ZoomRequest {
+            file: bad.clone(),
+            params: params(&ConvertSettings::default()),
+            center: [0.5, 0.5],
+            view_px: [100, 80],
+            want_camera: false,
+            max_side: 16384,
+        });
+        let seen = wait_for(&w, |e| matches!(e, PreviewEvent::ZoomFailed { .. }));
+        assert!(!seen
+            .iter()
+            .any(|e| matches!(e, PreviewEvent::Failed { .. })));
+        w.join();
     }
 
     #[test]

@@ -15,7 +15,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 use super::*;
-use crate::controller::BatchIssue;
+use crate::controller::{BatchIssue, DropSelection};
 use crate::i18n::Lang;
 use crate::preview_panel::Zoom;
 
@@ -837,6 +837,249 @@ fn real_sample_zoom_pans_and_compares() {
     assert!(!app(&h).preview.compare_on());
 }
 
+fn synthetic_source(names: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let dng = synthetic_dng(&DngSpec {
+        width: 320,
+        height: 240,
+        ..Default::default()
+    });
+    for name in names {
+        std::fs::write(dir.path().join(name), &dng).unwrap();
+    }
+    dir
+}
+
+fn synthetic_loaded(home: &Path, src: &Path) -> H {
+    let mut h = harness(
+        home,
+        vec2(1240.0, 800.0),
+        with_source(no_update_check(), src),
+        1.0,
+    );
+    wait(&mut h, "scan", |a| a.preview.file_count() > 0);
+    wait(&mut h, "the developed preview", |a| {
+        a.preview.has_developed()
+    });
+    h
+}
+
+fn open_hundred_percent(h: &mut H) {
+    h.get_by_role_and_label(Role::RadioButton, t(Key::ZoomActual))
+        .click();
+    h.run_steps(3);
+    wait(h, "the crop", |a| a.preview.has_crop());
+}
+
+/// A full-resolution image is hundreds of megabytes: it must not stay behind
+/// when the folder changes to one where the 100 % view has nothing to show.
+#[test]
+fn changing_the_folder_leaves_the_100_percent_view_and_frees_its_memory() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = synthetic_source(&["a.DNG"]);
+    let empty = tempfile::tempdir().unwrap();
+    let mut h = synthetic_loaded(home.path(), src.path());
+    open_hundred_percent(&mut h);
+    let before = app(&h).preview.full_releases();
+
+    app_mut(&mut h).source = empty.path().to_string_lossy().into_owned();
+    wait(&mut h, "the empty folder", |a| a.preview.file_count() == 0);
+    assert_eq!(app(&h).preview.zoom(), Zoom::Fit);
+    wait(&mut h, "the release", |a| {
+        a.preview.full_releases() > before
+    });
+}
+
+#[test]
+fn hiding_the_preview_leaves_the_100_percent_view_and_frees_its_memory() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = synthetic_source(&["a.DNG"]);
+    let mut h = synthetic_loaded(home.path(), src.path());
+    open_hundred_percent(&mut h);
+    let before = app(&h).preview.full_releases();
+
+    // Narrow window with the preview collapsed: nothing shows the crop.
+    app_mut(&mut h).preview.open = false;
+    h.set_size(vec2(600.0, 820.0));
+    h.run_steps(4);
+    assert_eq!(app(&h).preview.zoom(), Zoom::Fit);
+    wait(&mut h, "the release", |a| {
+        a.preview.full_releases() > before
+    });
+}
+
+/// A batch started from the 100 % view frees the full-resolution image, and
+/// the view comes back when the batch is over.
+#[test]
+fn batch_while_zoomed_frees_the_image_and_the_view_recovers() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = synthetic_source(&["a.DNG"]);
+    let mut h = synthetic_loaded(home.path(), src.path());
+    open_hundred_percent(&mut h);
+    let before = app(&h).preview.full_releases();
+
+    h.get_by_label(t(Key::StartButton)).click();
+    h.run_steps(3);
+    wait(&mut h, "the batch", |a| a.report.is_some());
+    assert_eq!(app(&h).report.as_ref().unwrap().converted, 1);
+    assert!(app(&h).preview.full_releases() > before, "image released");
+    assert_eq!(app(&h).preview.zoom(), Zoom::Actual);
+    wait(&mut h, "the crop again", |a| a.preview.has_crop());
+}
+
+/// A file whose camera JPEG can be shown but that cannot be developed.
+fn undevelopable_raw(dir: &Path) -> PathBuf {
+    let img = image::RgbImage::from_pixel(64, 48, image::Rgb([180, 90, 40]));
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode_image(&img)
+        .unwrap();
+    let mut blob = vec![0x42u8; 300];
+    blob.extend_from_slice(&jpeg);
+    blob.extend_from_slice(&[0u8; 100]);
+    let path = dir.join("unsupported.NEF");
+    std::fs::write(&path, blob).unwrap();
+    path
+}
+
+/// Regression: on a RAW that cannot be developed, the 100 % button promised
+/// "Developing at full resolution..." forever.
+#[test]
+fn hundred_percent_on_an_undevelopable_file_returns_to_the_whole_photo() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    undevelopable_raw(src.path());
+    let mut h = harness(
+        home.path(),
+        vec2(1240.0, 800.0),
+        with_source(no_update_check(), src.path()),
+        1.0,
+    );
+    wait(&mut h, "the camera JPEG", |a| a.preview.has_camera());
+    wait(&mut h, "the failure", |a| {
+        !a.preview.has_developed() && a.preview.shown_status().contains("Can't develop")
+    });
+    h.get_by_role_and_label(Role::RadioButton, t(Key::ZoomActual))
+        .click();
+    h.run_steps(3);
+    wait(&mut h, "the way back", |a| a.preview.zoom() == Zoom::Fit);
+    assert!(app(&h).preview.has_camera(), "the camera JPEG stays");
+    assert!(app(&h).preview.shown_status().contains("Can't develop"));
+}
+
+/// Regression: two drops of the same size from one folder kept showing the
+/// first file, while the batch converted the second.
+#[test]
+fn a_new_drop_of_the_same_size_changes_the_preview() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = synthetic_source(&["a.DNG", "b.DNG"]);
+    let mut h = harness(home.path(), vec2(1240.0, 800.0), no_update_check(), 1.0);
+    let staged = |name: &str| DropSelection {
+        root: src.path().to_path_buf(),
+        files: vec![src.path().join(name)],
+    };
+    let a = app_mut(&mut h);
+    a.source = src.path().to_string_lossy().into_owned();
+    a.selection = Some(staged("a.DNG"));
+    wait(&mut h, "the first drop", |a| a.preview.has_developed());
+    app_mut(&mut h).selection = Some(staged("b.DNG"));
+    h.run_steps(3);
+    assert_eq!(
+        app(&h).preview.current_file(),
+        Some(&src.path().join("b.DNG"))
+    );
+}
+
+/// Regression: in camera JPEG mode nothing is developed, but "Developing..."
+/// (or the file count) stayed on the photo.
+#[test]
+fn camera_jpeg_mode_shows_no_development_status() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = synthetic_source(&["a.DNG", "b.DNG"]);
+    let settings = AppSettings {
+        convert: ConvertSettings {
+            extract_embedded: true,
+            ..Default::default()
+        },
+        ..with_source(no_update_check(), src.path())
+    };
+    let mut h = harness(home.path(), vec2(1240.0, 800.0), settings, 1.0);
+    wait(&mut h, "the camera JPEG", |a| a.preview.has_camera());
+    h.get_by_label(">").click();
+    h.run_steps(3);
+    wait(&mut h, "the next camera JPEG", |a| a.preview.has_camera());
+    assert_eq!(app(&h).preview.shown_status(), "");
+}
+
+/// A typo in the file name template is explained at once, in the user's
+/// language, instead of ending in an "unexpected error" card.
+#[test]
+fn an_invalid_file_name_is_refused_before_the_batch_starts() {
+    i18n::set_language(Lang::Korean);
+    let home = tempfile::tempdir().unwrap();
+    let src = synthetic_source(&["a.DNG"]);
+    let mut h = harness(
+        home.path(),
+        vec2(1240.0, 800.0),
+        with_source(no_update_check(), src.path()),
+        1.0,
+    );
+    app_mut(&mut h).settings.filename_template = "{oops}".into();
+    settle_steps(&mut h);
+    h.get_by_label(t(Key::StartButton)).click();
+    settle_steps(&mut h);
+    assert!(app(&h).job.is_none());
+    assert!(app(&h).report.is_none());
+    let notice = app(&h).notice.as_ref().map(|(n, _)| n.clone()).unwrap();
+    assert_eq!(notice, tf(Key::TemplateUnknownToken, &[&"oops"]));
+    i18n::set_language(Lang::English);
+}
+
+#[test]
+fn zero_typed_in_the_long_edge_field_reads_as_original_size() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let mut h = harness(home.path(), vec2(1240.0, 800.0), no_update_check(), 1.0);
+    assert_eq!(app(&h).settings.resize_text, "");
+    app_mut(&mut h).settings.resize_text = "0".into();
+    settle_steps(&mut h);
+    // Fields top to bottom: RAW folder, save folder, long edge.
+    let field = h
+        .get_all_by_role(Role::TextInput)
+        .nth(2)
+        .expect("the long edge field");
+    field.focus();
+    h.run_steps(3);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(app(&h).settings.resize_text, "");
+    assert_eq!(app(&h).settings.to_convert().resize, 0);
+}
+
+/// Folder shown in the documentation: the samples live in the repository,
+/// which is no business of a reader.
+fn demo_folder(code: &str) -> &'static str {
+    if code == "ko" {
+        r"D:\사진\2026-11 제주\RAW"
+    } else {
+        r"D:\Photos\2026-11 Jeju\RAW"
+    }
+}
+
+/// Stop the worker, so the source text can change without a new scan, and
+/// show `demo_folder`. Call last: nothing new loads afterwards.
+fn show_demo_folder(h: &mut H, code: &str) {
+    let a = app_mut(h);
+    a.preview.detach_worker();
+    a.source = demo_folder(code).to_string();
+}
+
 /// `CCOON_SCREENSHOT_OUT` = directory for the PNGs. Offscreen, nothing is shown.
 #[test]
 #[ignore]
@@ -846,67 +1089,91 @@ fn screenshots() {
         return;
     };
     std::fs::create_dir_all(&out).unwrap();
-    let save = |h: &mut H, name: &str| {
+    let save = |h: &mut H, name: String| {
+        // No pointer drawn on the picture and no button left in its hover state.
+        h.set_render_cursor(false);
+        h.remove_cursor();
         h.run_steps(4);
         let image = h.render().expect("offscreen render");
-        image.save(out.join(name)).unwrap();
+        image.save(out.join(&name)).unwrap();
         println!("wrote {name}");
     };
     let wide = vec2(1240.0, 800.0);
     let narrow = vec2(600.0, 820.0);
+    // Only to compare with a capture of the real window at its display scale.
+    let ppp: f32 = std::env::var("CCOON_SCREENSHOT_PPP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
 
     for (lang, code) in [(Lang::Korean, "ko"), (Lang::English, "en")] {
         i18n::set_language(lang);
         let home = tempfile::tempdir().unwrap();
+        let main_name = if code == "ko" {
+            "gui_windows_ko.png".to_string()
+        } else {
+            "gui_windows.png".to_string()
+        };
+        let loaded_camera_sample = || {
+            let mut h = loaded(home.path(), wide, ppp);
+            select_camera_sample(&mut h);
+            wait(&mut h, "thumbnails", |a| a.preview.has_real_thumbnails());
+            h
+        };
 
         let mut h = harness(home.path(), wide, no_update_check(), 1.0);
-        save(&mut h, &format!("empty_{code}.png"));
+        save(&mut h, format!("empty_{code}.png"));
 
-        let mut h = harness(home.path(), narrow, no_update_check(), 1.0);
-        save(&mut h, &format!("empty_narrow_{code}.png"));
-
-        let mut h = loaded(home.path(), wide, 1.0);
-        select_camera_sample(&mut h);
-        wait(&mut h, "thumbnails", |a| a.preview.has_real_thumbnails());
-        save(&mut h, &format!("loaded_{code}.png"));
-
+        let mut h = loaded_camera_sample();
+        show_demo_folder(&mut h, code);
+        save(&mut h, main_name);
         app_mut(&mut h).preview.set_compare(true);
-        save(&mut h, &format!("split_{code}.png"));
+        save(&mut h, format!("split_{code}.png"));
 
+        let mut h = loaded_camera_sample();
+        app_mut(&mut h).preview.set_compare(true);
         h.get_by_role_and_label(Role::RadioButton, t(Key::ZoomActual))
             .click();
         h.run_steps(3);
         wait(&mut h, "the crop", |a| a.preview.has_crop());
-        save(&mut h, &format!("zoom100_{code}.png"));
+        show_demo_folder(&mut h, code);
+        save(&mut h, format!("zoom100_{code}.png"));
 
-        let mut h = loaded(home.path(), wide, 1.0);
+        let mut h = loaded_camera_sample();
+        show_demo_folder(&mut h, code);
         let a = app_mut(&mut h);
         let mut report = BatchReport::new(
             &outcome_with_failures(),
-            Path::new("D:/사진/Converted_JPG"),
-            &a.paths.log_file(),
+            Path::new(demo_folder(code)).join("Converted_JPG").as_path(),
+            Path::new(r"C:\Users\me\AppData\Local\ccoon\CcooNverter\data\logs\ccoonverter.log"),
         );
         report.issues.push(BatchIssue {
             file: "broken_card.CR2".into(),
             reason: t(Key::FailUnreadable).to_string(),
         });
         a.report = Some(report);
-        save(&mut h, &format!("result_{code}.png"));
+        save(&mut h, format!("result_{code}.png"));
+
+        let mut h = loaded_camera_sample();
+        show_demo_folder(&mut h, code);
+        let a = app_mut(&mut h);
+        a.output_options_open = true;
+        a.settings.filename_template = "{date}_{name}".into();
+        save(&mut h, format!("output_{code}.png"));
 
         let mut h = loaded(home.path(), narrow, 1.0);
-        wait(&mut h, "the developed preview", |a| {
-            a.preview.has_developed()
-        });
-        save(&mut h, &format!("narrow_{code}.png"));
-
+        select_camera_sample(&mut h);
+        show_demo_folder(&mut h, code);
+        save(&mut h, format!("narrow_{code}.png"));
         app_mut(&mut h).settings.extract_embedded = true;
-        save(&mut h, &format!("narrow_camera_{code}.png"));
+        save(&mut h, format!("narrow_camera_{code}.png"));
 
-        let mut h = loaded(home.path(), wide, 1.0);
+        let mut h = loaded_camera_sample();
+        show_demo_folder(&mut h, code);
         h.get_by_label(t(Key::Advanced)).click();
         h.run_steps(3);
         app_mut(&mut h).settings.brightness = 1.25;
-        save(&mut h, &format!("advanced_{code}.png"));
+        save(&mut h, format!("advanced_{code}.png"));
     }
     i18n::set_language(Lang::English);
 }

@@ -8,6 +8,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+#[cfg(feature = "capture")]
+mod capture;
 mod controller;
 mod dialogs;
 mod fonts;

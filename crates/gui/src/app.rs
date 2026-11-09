@@ -113,6 +113,8 @@ pub struct CcooNverterApp {
     report: Option<BatchReport>,
     /// Brightness slider is being dragged (keeps it on screen at 1.0).
     brightness_active: bool,
+    #[cfg(feature = "capture")]
+    capture: Option<crate::capture::Capture>,
 }
 
 /// `desired` reduced to fit the screen, leaving room for the task bar.
@@ -152,6 +154,9 @@ impl CcooNverterApp {
             })
             .unwrap_or_default();
 
+        #[cfg(feature = "capture")]
+        let source = crate::capture::Capture::folder_override().unwrap_or(source);
+
         let update_rx = app_settings
             .check_updates
             .then(|| spawn_update_check(paths.update_cache_file()));
@@ -178,6 +183,8 @@ impl CcooNverterApp {
             output_options_open: false,
             report: None,
             brightness_active: false,
+            #[cfg(feature = "capture")]
+            capture: crate::capture::Capture::from_env(),
             paths,
         }
     }
@@ -413,6 +420,12 @@ impl CcooNverterApp {
     fn start_conversion(&mut self, ctx: &egui::Context, frame: Option<&eframe::Frame>) {
         if self.is_converting() {
             log::warn!("Conversion already in progress");
+            return;
+        }
+        // A file name template with a typo is the user's to fix, not an
+        // "unexpected error" after the batch has started.
+        if let Err(reason) = self.settings.name_example() {
+            self.set_notice(reason);
             return;
         }
         // Dropped files (the selection) take the place of a folder scan.
@@ -874,10 +887,12 @@ impl CcooNverterApp {
                 );
             },
             |ui, w| {
-                tip(
-                    widgets::text_field(ui, &mut s.resize_text, t(Key::ResizeHint), w),
-                    t(Key::TipResize),
-                );
+                let field = widgets::text_field(ui, &mut s.resize_text, t(Key::ResizeHint), w);
+                // 0 or anything unusable means original size: show it as such.
+                if field.lost_focus() && crate::controller::parse_resize(&s.resize_text) == 0 {
+                    s.resize_text.clear();
+                }
+                tip(field, t(Key::TipResize));
             },
         );
         // In camera JPEG mode a file is copied byte for byte unless it is resized.
@@ -1386,6 +1401,13 @@ impl CcooNverterApp {
 
         for action in actions {
             self.run_action(action, &ctx, frame);
+        }
+
+        #[cfg(feature = "capture")]
+        if let Some(capture) = &mut self.capture {
+            self.preview.capture_select(capture.file_index());
+            let ready = self.preview.capture_ready(capture.file_index());
+            capture.tick(&ctx, ready);
         }
     }
 

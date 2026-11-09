@@ -3,7 +3,9 @@
 //!
 //! Everything painted here is neutral grey on purpose (see [`crate::theme`]).
 
-use std::path::PathBuf;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ccoonverter_core::render::{Region, RenderParams};
@@ -182,6 +184,8 @@ impl PreviewPanel {
     }
 
     fn set_files(&mut self, files: Vec<PathBuf>) {
+        // A new list has nothing to do with the photo being viewed at 100 %.
+        self.set_zoom(Zoom::Fit);
         self.files = files;
         self.index = 0;
         self.clear_images();
@@ -234,6 +238,11 @@ impl PreviewPanel {
         for e in events {
             self.apply(ctx, e);
         }
+        if settings.extract_embedded {
+            // Nothing is being developed in this mode, so no development
+            // status may stay on the photo.
+            self.status.clear();
+        }
         if converting && !self.paused {
             // A batch needs the memory more than the 100 % view does.
             self.crop = None;
@@ -245,7 +254,7 @@ impl PreviewPanel {
         self.paused = converting;
 
         let key = selection
-            .map(|s| format!("{}\u{1}{}", s.root.display(), s.files.len()))
+            .map(selection_key)
             .unwrap_or_else(|| source_text.trim().to_owned());
         if self.source_key.as_deref() != Some(key.as_str()) {
             self.source_key = Some(key.clone());
@@ -261,6 +270,8 @@ impl PreviewPanel {
             }
         }
         if !visible {
+            // Hidden: do not keep the full-resolution image for it.
+            self.set_zoom(Zoom::Fit);
             return;
         }
         if let Some(due) = self.scan_due {
@@ -374,15 +385,21 @@ impl PreviewPanel {
     fn apply(&mut self, ctx: &egui::Context, event: PreviewEvent) {
         match event {
             PreviewEvent::Scanned { root, files, error } => {
-                if let Some(e) = error {
-                    log::warn!("Preview scan of {} failed: {e}", root.display());
+                // A scan that was still running when the folder changed, or
+                // when files were dropped, says nothing about what is shown.
+                if self.source_key.as_deref().map(Path::new) != Some(root.as_path()) {
+                    log::debug!("Ignoring the scan of {}", root.display());
+                    return;
                 }
                 self.set_files(files);
-                if self.files.is_empty() {
-                    self.message = Some(t(Key::NoRawInFolder).to_string());
-                } else {
-                    self.message = None;
-                }
+                self.message = match &error {
+                    Some(e) => {
+                        log::warn!("Preview scan of {} failed: {e}", root.display());
+                        Some(tf(Key::FileSystemError, &[e]))
+                    }
+                    None if self.files.is_empty() => Some(t(Key::NoRawInFolder).to_string()),
+                    None => None,
+                };
                 self.status = tf(Key::RawCount, &[&self.files.len()]);
             }
             PreviewEvent::Developing { file } => {
@@ -434,7 +451,7 @@ impl PreviewPanel {
                 developed,
                 camera,
             } => {
-                if self.current() == Some(&file) && self.zoom == Zoom::Actual {
+                if self.current() == Some(&file) && self.zoom == Zoom::Actual && !self.paused {
                     self.full_size = Some(full_size);
                     let frame = |name, image, options| Frame {
                         size: [region.w as usize, region.h as usize],
@@ -454,6 +471,15 @@ impl PreviewPanel {
                             frame("zoom_camera", i, options)
                         }),
                     });
+                }
+            }
+            PreviewEvent::ZoomFailed { file, message } => {
+                if self.current() == Some(&file) && self.zoom == Zoom::Actual {
+                    self.set_zoom(Zoom::Fit);
+                    let has_image = self.developed.is_some() || self.embedded.is_some();
+                    if has_image && self.message.is_none() {
+                        self.message = Some(tf(Key::ZoomFailed, &[&short_message(&message)]));
+                    }
                 }
             }
             PreviewEvent::Thumbnails { request, images } => {
@@ -646,6 +672,13 @@ impl PreviewPanel {
         );
     }
 
+    /// Note on the photo while full-resolution pixels are on their way. None
+    /// while a batch runs: nothing is being loaded then, and the paused
+    /// status is shown in this spot instead.
+    fn zoom_loading_text(&self) -> Option<&'static str> {
+        (!self.paused).then(|| t(Key::ZoomLoading))
+    }
+
     /// Whether the split compare can be drawn in this mode.
     fn compare_active(&self, embedded_mode: bool) -> bool {
         self.compare && !embedded_mode && self.embedded.is_some() && self.developed.is_some()
@@ -729,11 +762,9 @@ impl PreviewPanel {
                     Color32::WHITE,
                 );
             }
-            tag(
-                painter,
-                rect.left_bottom() + vec2(8.0, -28.0),
-                t(Key::ZoomLoading),
-            );
+            if let Some(text) = self.zoom_loading_text() {
+                tag(painter, rect.left_bottom() + vec2(8.0, -28.0), text);
+            }
             if resp.double_clicked() {
                 self.set_zoom(Zoom::Fit);
             }
@@ -765,11 +796,11 @@ impl PreviewPanel {
                     }
                 }
             }
-            None => tag(
-                painter,
-                rect.left_bottom() + vec2(8.0, -28.0),
-                t(Key::ZoomLoading),
-            ),
+            None => {
+                if let Some(text) = self.zoom_loading_text() {
+                    tag(painter, rect.left_bottom() + vec2(8.0, -28.0), text);
+                }
+            }
         }
         if compare {
             self.draw_split_overlay(ui, painter, area, resp);
@@ -954,6 +985,14 @@ impl PreviewPanel {
     }
 }
 
+/// Identifies a set of dropped files: two drops of the same size are still
+/// different selections.
+fn selection_key(selection: &DropSelection) -> String {
+    let mut hasher = DefaultHasher::new();
+    selection.files.hash(&mut hasher);
+    format!("{}\u{1}{:x}", selection.root.display(), hasher.finish())
+}
+
 /// Maps full-resolution image pixels to screen points so that one image pixel
 /// lands exactly on one physical screen pixel, whatever the HiDPI scale.
 #[derive(Debug, Clone, Copy)]
@@ -1047,6 +1086,25 @@ fn placeholder_image(style_choice: PictureStyle) -> ColorImage {
     ColorImage::from_rgb([w as usize, h as usize], rgb.as_raw())
 }
 
+#[cfg(feature = "capture")]
+impl PreviewPanel {
+    /// Move to file `index` of the folder once the folder has been scanned.
+    pub fn capture_select(&mut self, index: usize) {
+        if self.index != index && index < self.files.len() {
+            self.index = index;
+            self.clear_images();
+            self.message = None;
+        }
+    }
+
+    /// The photo and all its style thumbnails are on screen.
+    pub fn capture_ready(&self, index: usize) -> bool {
+        self.index == index
+            && self.developed.is_some()
+            && self.thumbs.len() == PictureStyle::ALL.len()
+    }
+}
+
 #[cfg(test)]
 impl PreviewPanel {
     pub fn zoom(&self) -> Zoom {
@@ -1067,6 +1125,19 @@ impl PreviewPanel {
 
     pub fn has_real_thumbnails(&self) -> bool {
         self.thumbs.len() == PictureStyle::ALL.len()
+    }
+
+    pub fn current_file(&self) -> Option<&PathBuf> {
+        self.current()
+    }
+
+    pub fn shown_status(&self) -> String {
+        self.status_text()
+    }
+
+    /// Full-resolution releases the worker has carried out.
+    pub fn full_releases(&self) -> usize {
+        self.worker.as_ref().map_or(0, PreviewWorker::full_releases)
     }
 
     pub fn compare_on(&self) -> bool {
@@ -1155,6 +1226,104 @@ mod tests {
                 assert!(((qq - pp) - 1.0).abs() < 1e-3, "{ppp}: {pp} {qq}");
             }
         }
+    }
+
+    fn with_source(key: &str) -> PreviewPanel {
+        let mut panel = PreviewPanel::new(None, true);
+        panel.source_key = Some(key.to_owned());
+        panel
+    }
+
+    fn scanned(root: &str, error: Option<&str>) -> PreviewEvent {
+        PreviewEvent::Scanned {
+            root: PathBuf::from(root),
+            files: Vec::new(),
+            error: error.map(str::to_owned),
+        }
+    }
+
+    /// Regression: a scan finishing after the folder changed replaced the file
+    /// list of the new folder, or of dropped files.
+    #[test]
+    fn a_late_scan_of_another_folder_is_ignored() {
+        let ctx = egui::Context::default();
+        let mut panel = with_source("D:/new");
+        panel.files = vec![PathBuf::from("D:/new/a.DNG")];
+        panel.apply(&ctx, scanned("D:/old", None));
+        assert_eq!(panel.files.len(), 1);
+        panel.apply(&ctx, scanned("D:/new", None));
+        assert!(panel.files.is_empty());
+    }
+
+    /// Regression: an unreadable folder was reported as a folder without RAW files.
+    #[test]
+    fn an_unreadable_folder_shows_the_reason() {
+        crate::i18n::set_language(crate::i18n::Lang::English);
+        let ctx = egui::Context::default();
+        let mut panel = with_source("D:/locked");
+        panel.apply(&ctx, scanned("D:/locked", Some("Access is denied")));
+        let message = panel.message.clone().unwrap();
+        assert!(message.contains("Access is denied"), "{message}");
+        panel.apply(&ctx, scanned("D:/locked", None));
+        assert_eq!(
+            panel.message.as_deref(),
+            Some(t(Key::NoRawInFolder)),
+            "a readable empty folder keeps its own message"
+        );
+    }
+
+    /// Regression: two drops with the same parent and file count were the same
+    /// key, so the preview kept showing the first drop.
+    #[test]
+    fn selections_of_the_same_size_have_different_keys() {
+        let selection = |name: &str| DropSelection {
+            root: PathBuf::from("D:/shoot"),
+            files: vec![PathBuf::from("D:/shoot").join(name)],
+        };
+        assert_ne!(
+            selection_key(&selection("a.DNG")),
+            selection_key(&selection("b.DNG"))
+        );
+        assert_eq!(
+            selection_key(&selection("a.DNG")),
+            selection_key(&selection("a.DNG"))
+        );
+    }
+
+    /// Regression: while a batch ran, "Developing at full resolution..." was
+    /// drawn over the paused status, and a late result was uploaded anyway.
+    #[test]
+    fn a_batch_pauses_the_100_percent_view() {
+        let ctx = egui::Context::default();
+        let file = PathBuf::from("D:/a.DNG");
+        let zoomed = || PreviewEvent::Zoomed {
+            file: file.clone(),
+            full_size: [2, 2],
+            region: Region {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 2,
+            },
+            developed: Some(ColorImage::from_rgb([2, 2], &[0u8; 12])),
+            camera: None,
+        };
+        let mut panel = with_source("D:/");
+        panel.files = vec![file.clone()];
+        panel.zoom = Zoom::Actual;
+        assert!(panel.zoom_loading_text().is_some());
+
+        panel.paused = true;
+        assert!(panel.zoom_loading_text().is_none());
+        panel.apply(&ctx, zoomed());
+        assert!(
+            panel.crop.is_none(),
+            "kept while the batch needs the memory"
+        );
+
+        panel.paused = false;
+        panel.apply(&ctx, zoomed());
+        assert!(panel.crop.is_some());
     }
 
     #[test]
