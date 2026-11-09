@@ -149,6 +149,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: CcooNverter v${{ env.VERSION }}
+          # Draft first: test the artifacts, then press "Publish release" on GitHub.
+          draft: true
           body_path: RELEASE_NOTES.md
           files: |
             dist/CcooNverter_v${{ env.VERSION }}_windows_x64.exe

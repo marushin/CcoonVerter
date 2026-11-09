@@ -135,7 +135,7 @@ open dist/macos/CcooNverter_v0.9.0_macos_universal.dmg
 
 1. `Cargo.toml`의 `[workspace.package] version`과 `CHANGELOG.md`의 `## vX.Y.Z` 절을 맞춥니다.
 2. `main`에 푸시하면 [CI](https://github.com/marushin/CcoonVerter/actions/workflows/ci.yml)가 Linux/Windows/macOS에서 fmt, clippy, 테스트, 릴리스 빌드를 실행합니다.
-3. `git tag vX.Y.Z && git push origin vX.Y.Z`를 하면 [Release 워크플로](.github/workflows/release.yml)가 Windows exe, macOS universal DMG, `SHA256SUMS.txt`를 만들어 GitHub Release에 첨부합니다. 릴리스 본문은 CHANGELOG의 해당 절입니다.
+3. `git tag vX.Y.Z && git push origin vX.Y.Z`를 하면 [Release 워크플로](.github/workflows/release.yml)가 Windows exe, macOS universal DMG, `SHA256SUMS.txt`를 만들어 GitHub Release에 첨부합니다. 릴리스 본문은 CHANGELOG의 해당 절입니다. 릴리스는 **드래프트**로 만들어지므로, 첨부된 파일을 받아 Windows/macOS에서 확인한 뒤 GitHub에서 **Publish release**를 눌러 공개합니다.
 
 ## 라이선스
 
