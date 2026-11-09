@@ -121,7 +121,7 @@ cargo test --workspace
 ```
 
 - **Windows 배포 파일**: `powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1` → `dist\CcooNverter_v<버전>_windows_x64.exe`, `dist\SHA256SUMS.txt`
-- **macOS 앱/DMG**: `xcode-select --install` 후 `bash scripts/build_macos.sh` → `dist/macos/CcooNverter.app`, `dist/macos/CcooNverter_v<버전>_macos_universal.dmg` (universal, ad-hoc 서명). 확인 항목은 [docs/03_MAC_BUILD_PLAN.md](docs/03_MAC_BUILD_PLAN.md) §7에 있습니다.
+- **macOS 앱/DMG**: `xcode-select --install` 후 `bash scripts/build_macos.sh` → `dist/macos/CcooNverter.app`, `dist/macos/CcooNverter_v<버전>_macos_universal.dmg` (universal, ad-hoc 서명).
 - **렌더러**: 기본 빌드는 OpenGL(glow)로 그립니다. OpenGL 드라이버에 문제가 있으면 wgpu(DirectX 12 / Vulkan / Metal) 렌더러로 빌드할 수 있습니다: `cargo build --release -p ccoonverter --features wgpu`
 - **Linux 빌드**에는 `libgtk-3-dev libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev`가 필요합니다(공식 배포는 Windows/macOS만).
 

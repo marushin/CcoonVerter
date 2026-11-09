@@ -6,3 +6,10 @@ Thumbs.db
 *_Conflict*
 tests/samples/
 tests/regression/cache/
+
+# Internal plans and reports stay local
+/docs/0*_*.md
+/docs/PHASE*_REPORT.md
+/docs/V*_REPORT.md
+/docs/ROADMAP*.md
+/docs/SAMPLE_VERIFICATION.md
