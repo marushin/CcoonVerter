@@ -10,6 +10,7 @@ tests/regression/cache/
 # Internal notes stay local
 /CLAUDE.md
 /.claude/
+/docs/screenshots/
 /docs/0*_*.md
 /docs/PHASE*_REPORT.md
 /docs/V*_REPORT.md

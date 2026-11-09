@@ -8,7 +8,7 @@
 폴더를 고르고, 결과를 미리 보고, 버튼 하나로 하위 폴더까지 모든 RAW 파일을 JPG, PNG, 16비트 TIFF, WebP로 변환합니다.
 설치 없이 실행되는 파일 하나로 배포됩니다. 사진 관리나 부분 보정은 하지 않습니다.
 
-![CcooNverter 메인 화면](docs/screenshots/gui_windows_ko.png)
+![CcooNverter 메인 화면](docs/gui_windows_ko.png)
 
 > English: [below](#english)
 
@@ -47,7 +47,7 @@
 
 | 비교 | 결과 카드 |
 |---|---|
-| ![비교](docs/screenshots/split_ko.png) | ![결과 카드](docs/screenshots/result_ko.png) |
+| ![비교](docs/split_ko.png) | ![결과 카드](docs/result_ko.png) |
 
 ## 지원 포맷
 
@@ -147,7 +147,7 @@ v0.8.7 이하는 Python(CustomTkinter + rawpy) 앱이었습니다. 예전 실행
 
 **CcooNverter** is a fast batch RAW converter for Windows and macOS. Pick a folder, check the result in the preview, press one button, and every RAW file (sub-folders included) becomes a JPEG, PNG, 16-bit TIFF or WebP. It ships as a single portable executable on Windows and a universal app on macOS. It does not manage photos or do local edits.
 
-![CcooNverter main window](docs/screenshots/gui_windows.png)
+![CcooNverter main window](docs/gui_windows.png)
 
 **New here?** Read the [user guide](docs/GUIDE.en.md) and the [FAQ](docs/FAQ.en.md).
 

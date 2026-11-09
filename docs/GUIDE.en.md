@@ -4,7 +4,7 @@ CcooNverter turns folders of RAW photos into JPEG, PNG, TIFF or WebP files. It d
 
 This guide is written for photographers seeing the app for the first time. More answers are in the [FAQ](FAQ.en.md). 한국어: [GUIDE.ko.md](GUIDE.ko.md)
 
-![Main window](screenshots/gui_windows.png)
+![Main window](gui_windows.png)
 
 ## 1. Install
 
@@ -52,7 +52,7 @@ The app starts in Korean or English, following your system language. You can cha
 
 **Step 1. Choose a folder.** Drop a folder of RAW files on the window, or use **Browse** at the top. Sub-folders are included. To convert just a few photos, drop those RAW files on the window instead.
 
-![Empty window](screenshots/empty_en.png)
+![Empty window](empty_en.png)
 
 **Step 2. Look at the preview.** The first photo is developed in the middle of the window. Use `<` and `>` to look at others.
 
@@ -89,7 +89,7 @@ These appear in RAW develop mode. The preview updates as you change a value.
 
 **Double-click** a slider to return just that value to its default.
 
-![Advanced](screenshots/advanced_en.png)
+![Advanced](advanced_en.png)
 
 ## 5. Preview tools
 
@@ -99,7 +99,7 @@ The preview goes through the same processing as the saved file. What you see is 
 - **Compare**: the camera's JPEG on the left, your development on the right. Drag the divider to move it. Available only when the file contains a camera JPEG.
 - **Histogram**: brightness distribution at the top right. The button shows or hides it.
 
-![Compare](screenshots/split_en.png)
+![Compare](split_en.png)
 
 In a narrow window the preview is opened with the **Show preview** button. The preview pauses while a conversion runs.
 
@@ -123,9 +123,9 @@ Give the photos you like some stars, then gather them with the filter.
 - **While a filter is on, only the photos shown are converted.** The run bar says so ("Filter on: 12 of 38 files"), the button changes to "Cook 12 Shown", and the result card repeats it. **Show all** goes back to converting every file.
 - With "Keep EXIF shooting data" on, ratings reach the converted files. With it off, they do not.
 
-![The filter on](screenshots/thumbs_filter_en.png)
+![The filter on](thumbs_filter_en.png)
 
-![The thumbnail row in a narrow window](screenshots/thumbs_strip_en.png)
+![The thumbnail row in a narrow window](thumbs_strip_en.png)
 
 ## 6. Output options
 
@@ -139,7 +139,7 @@ Set these in the **Output** section on the left.
 
 The **Format** button opens the detailed options.
 
-![Output options](screenshots/output_en.png)
+![Output options](output_en.png)
 
 | Format | Notes |
 |---|---|
@@ -171,7 +171,7 @@ Presets from the old Python version (v0.8.x) can be read too.
 
 When a conversion ends, a card takes the place of the preview.
 
-![Result card](screenshots/result_en.png)
+![Result card](result_en.png)
 
 - **Converted**: files saved successfully.
 - **Skipped**: files not written because of "If a file exists: Skip".
