@@ -9,16 +9,16 @@ use ccoonverter_core::paths::AppPaths;
 use ccoonverter_core::presets::PresetStore;
 use ccoonverter_core::settings::UiLanguage;
 use ccoonverter_core::update::{self, ReleaseInfo};
-use ccoonverter_core::{AppSettings, PictureStyle, WhiteBalance};
+use ccoonverter_core::{AppSettings, ColorSpace, OutputFormat, PictureStyle, WhiteBalance};
 use eframe::egui::{
     self, vec2, Align, Align2, Color32, ComboBox, Frame, Id, Label, LayerId, Layout, Margin, Order,
     RichText, ScrollArea, Stroke, StrokeKind, Ui, ViewportCommand,
 };
 
 use crate::controller::{
-    completion_message, conflict_label, plan_drop, prepare_batch, prepare_selection, style_name,
-    wb_name, BatchOutcome, DropPlan, DropSelection, ProgressView, RunningBatch, UiSettings,
-    CONFLICT_CHOICES,
+    batch_issues, color_note, completion_message, conflict_label, format_note, plan_drop,
+    prepare_batch, prepare_selection, style_name, wb_name, BatchIssue, BatchOutcome, DropPlan,
+    DropSelection, ProgressView, RunningBatch, UiSettings, CONFLICT_CHOICES,
 };
 use crate::dialogs;
 use crate::i18n::{self, t, tf, Key};
@@ -33,6 +33,12 @@ use crate::widgets::{self, tip, Columns};
 const WIDE_LAYOUT_WIDTH: f32 = 1040.0;
 /// Width of the settings column in the wide layout.
 const SETTINGS_COLUMN: f32 = 600.0;
+/// Label column of the output options dialog.
+const MODAL_LABEL_WIDTH: f32 = 110.0;
+/// Width of the "if output exists" combo box beside the output options button.
+const CONFLICT_COMBO_WIDTH: f32 = 118.0;
+/// Height of one row in the list of files that need attention.
+const ISSUE_ROW_HEIGHT: f32 = 58.0;
 /// Height of the image area when the preview is expanded in the narrow layout.
 const NARROW_PREVIEW_HEIGHT: f32 = 290.0;
 /// How long a drop notice stays visible.
@@ -85,6 +91,10 @@ pub struct CcooNverterApp {
     selection: Option<DropSelection>,
     /// Transient message after a drop.
     notice: Option<(String, Instant)>,
+    /// Output options modal is open.
+    output_options_open: bool,
+    /// Files that need attention after the last batch, shown in a modal.
+    issues: Option<Vec<BatchIssue>>,
 }
 
 impl CcooNverterApp {
@@ -139,6 +149,8 @@ impl CcooNverterApp {
             preview: PreviewPanel::new(worker, app_settings.preview_open),
             selection: None,
             notice: None,
+            output_options_open: false,
+            issues: None,
             paths,
         }
     }
@@ -226,6 +238,12 @@ impl CcooNverterApp {
                 s.was_cancelled
             ),
             BatchOutcome::Error(e) => log::error!("Conversion error: {e}"),
+        }
+        if let BatchOutcome::Finished(s) = &outcome {
+            let issues = batch_issues(s);
+            if !issues.is_empty() {
+                self.issues = Some(issues);
+            }
         }
         let msg = completion_message(&outcome, output_dir, &self.paths.log_file());
         if msg.offer_open {
@@ -672,9 +690,12 @@ impl CcooNverterApp {
         ) {
             actions.push(Action::BrowseOutput);
         }
+        let summary = self.settings.output_summary();
         let on_conflict = &mut self.settings.on_conflict;
-        cols.row(
+        let open_options = &mut self.output_options_open;
+        wide_row(
             ui,
+            cols,
             |ui| {
                 let label = ui.label(
                     RichText::new(t(Key::IfOutputExists))
@@ -683,9 +704,10 @@ impl CcooNverterApp {
                 );
                 tip(label, t(Key::TipConflict));
             },
-            |ui, _w| {
+            |ui, w| {
+                let combo_w = CONFLICT_COMBO_WIDTH;
                 let combo = ComboBox::from_id_salt("on_conflict")
-                    .width(150.0)
+                    .width(combo_w)
                     .selected_text(conflict_label(*on_conflict))
                     .show_ui(ui, |ui| {
                         for (p, label) in CONFLICT_CHOICES {
@@ -693,8 +715,20 @@ impl CcooNverterApp {
                         }
                     });
                 tip(combo.response, t(Key::TipConflict));
+                let button_w = (w - combo_w - ui.spacing().item_spacing.x - 12.0).max(120.0);
+                let button = widgets::outline_button(
+                    ui,
+                    &tf(Key::OutputButton, &[&summary]),
+                    vec2(button_w, 24.0),
+                    theme::font_small_bold(),
+                    ACCENT,
+                    Color32::TRANSPARENT,
+                    BORDER,
+                );
+                if tip(button, t(Key::TipOutputOptions)).clicked() {
+                    *open_options = true;
+                }
             },
-            |_ui, _| {},
         );
     }
 
@@ -771,16 +805,20 @@ impl CcooNverterApp {
                 );
             },
             |ui, w| {
-                let slider = widgets::color_slider(
-                    ui,
-                    &mut s.quality,
-                    f32::from(config::MIN_JPG_QUALITY)..=f32::from(config::MAX_JPG_QUALITY),
-                    Some(1.0),
-                    ACCENT,
-                    theme::ACCENT_HOVER,
-                    w,
-                );
-                tip(slider, t(Key::TipQuality));
+                // PNG and TIFF ignore the quality; embedded mode is JPEG.
+                let uses_quality = s.effective_format().uses_quality();
+                ui.add_enabled_ui(uses_quality, |ui| {
+                    let slider = widgets::color_slider(
+                        ui,
+                        &mut s.quality,
+                        f32::from(config::MIN_JPG_QUALITY)..=f32::from(config::MAX_JPG_QUALITY),
+                        Some(1.0),
+                        ACCENT,
+                        theme::ACCENT_HOVER,
+                        w,
+                    );
+                    tip(slider, t(Key::TipQuality));
+                });
                 s.quality
             },
             |ui, q| {
@@ -1139,6 +1177,173 @@ impl CcooNverterApp {
         });
     }
 
+    fn draw_output_options_modal(&mut self, ctx: &egui::Context) {
+        if !self.output_options_open {
+            return;
+        }
+        let s = &mut self.settings;
+        let mut close = false;
+        let modal = egui::Modal::new(Id::unique("output_options_modal"))
+            .frame(modal_frame())
+            .show(ctx, |ui| {
+                let width = (ctx.content_rect().width() - 80.0).clamp(300.0, 480.0);
+                ui.set_width(width);
+                ui.label(
+                    RichText::new(t(Key::OutputOptionsTitle))
+                        .font(theme::font_header())
+                        .color(ACCENT),
+                );
+                ui.add_space(6.0);
+                let note = |ui: &mut Ui, text: &str| {
+                    ui.label(
+                        RichText::new(text)
+                            .font(theme::font_small())
+                            .color(TEXT_DIM),
+                    );
+                };
+                let combo_w = width - MODAL_LABEL_WIDTH - ui.spacing().item_spacing.x;
+                let row_label = |ui: &mut Ui, text: &str, tooltip: &str| {
+                    widgets::cell(ui, MODAL_LABEL_WIDTH, 26.0, Align::Min, |ui| {
+                        tip(widgets::dim_label(ui, text), tooltip);
+                    });
+                };
+                ui.add_enabled_ui(!s.extract_embedded, |ui| {
+                    ui.horizontal(|ui| {
+                        row_label(ui, t(Key::FormatLabel), t(Key::TipFormat));
+                        let combo = ComboBox::from_id_salt("output_format")
+                            .width(combo_w)
+                            .selected_text(s.output_format.label())
+                            .show_ui(ui, |ui| {
+                                for f in OutputFormat::ALL {
+                                    ui.selectable_value(&mut s.output_format, f, f.label());
+                                }
+                            });
+                        tip(combo.response, t(Key::TipFormat));
+                    });
+                    note(ui, t(format_note(s.output_format)));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        row_label(ui, t(Key::ColorSpaceLabel), t(Key::TipColorSpace));
+                        let combo = ComboBox::from_id_salt("color_space")
+                            .width(combo_w)
+                            .selected_text(s.color_space.label())
+                            .show_ui(ui, |ui| {
+                                for c in ColorSpace::ALL {
+                                    ui.selectable_value(&mut s.color_space, c, c.label());
+                                }
+                            });
+                        tip(combo.response, t(Key::TipColorSpace));
+                    });
+                    note(ui, t(color_note(s.color_space)));
+                });
+                if s.extract_embedded {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(t(Key::CameraJpegOnly))
+                            .font(theme::font_small_bold())
+                            .color(ACCENT),
+                    );
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    row_label(ui, t(Key::NameTemplateLabel), t(Key::TipNameTemplate));
+                    let field = widgets::text_field(ui, &mut s.filename_template, "", combo_w);
+                    tip(field, t(Key::TipNameTemplate));
+                });
+                note(ui, t(Key::NameTokens));
+                match s.name_example() {
+                    Ok(name) => {
+                        ui.label(
+                            RichText::new(tf(Key::NameExample, &[&name]))
+                                .font(theme::font_body_bold())
+                                .color(TEXT),
+                        );
+                    }
+                    Err(e) => {
+                        ui.label(RichText::new(e).font(theme::font_body_bold()).color(DANGER));
+                    }
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if widgets::gold_button(
+                            ui,
+                            t(Key::Close),
+                            vec2(100.0, 28.0),
+                            theme::font_body_bold(),
+                        )
+                        .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close || modal.should_close() {
+            self.output_options_open = false;
+        }
+    }
+
+    fn draw_issues_modal(&mut self, ctx: &egui::Context) {
+        let Some(issues) = &self.issues else {
+            return;
+        };
+        let mut close = false;
+        let modal = egui::Modal::new(Id::unique("batch_issues_modal"))
+            .frame(modal_frame())
+            .show(ctx, |ui| {
+                let width = (ctx.content_rect().width() - 80.0).clamp(300.0, 540.0);
+                ui.set_width(width);
+                ui.label(
+                    RichText::new(tf(Key::IssuesTitle, &[&issues.len()]))
+                        .font(theme::font_header())
+                        .color(ACCENT),
+                );
+                ui.add_space(6.0);
+                ScrollArea::vertical()
+                    .max_height((ctx.content_rect().height() - 180.0).max(120.0))
+                    .auto_shrink([false, true])
+                    .show_rows(ui, ISSUE_ROW_HEIGHT, issues.len(), |ui, range| {
+                        for issue in &issues[range] {
+                            ui.allocate_ui(vec2(width - 16.0, ISSUE_ROW_HEIGHT), |ui| {
+                                ui.set_min_height(ISSUE_ROW_HEIGHT);
+                                ui.add(
+                                    Label::new(
+                                        RichText::new(&issue.file)
+                                            .font(theme::font_body_bold())
+                                            .color(TEXT),
+                                    )
+                                    .truncate(),
+                                );
+                                ui.label(
+                                    RichText::new(&issue.reason)
+                                        .font(theme::font_small())
+                                        .color(TEXT_DIM),
+                                );
+                            });
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if widgets::gold_button(
+                            ui,
+                            t(Key::Close),
+                            vec2(100.0, 28.0),
+                            theme::font_body_bold(),
+                        )
+                        .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close || modal.should_close() {
+            self.issues = None;
+        }
+    }
+
     fn draw_preset_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let Some(name) = self.preset_name_input.as_mut() else {
             return;
@@ -1345,6 +1550,8 @@ impl eframe::App for CcooNverterApp {
             });
         self.draw_preset_modal(&ctx, &mut actions);
         self.draw_update_modal(&ctx, &mut actions);
+        self.draw_output_options_modal(&ctx);
+        self.draw_issues_modal(&ctx);
         self.draw_overlays(&ctx);
 
         for action in actions {
@@ -1519,10 +1726,32 @@ mod layout_tests {
             (Key::Clear, 48.0, theme::font_small_bold()),
             (Key::Download, 120.0, theme::font_body_bold()),
             (Key::Later, 100.0, theme::font_body_bold()),
+            (Key::Close, 100.0, theme::font_body_bold()),
         ];
         for (key, width, font) in buttons {
             let w = text_width(&ctx, t(key), font);
             assert!(w <= width - 4.0, "{key:?} {lang:?}: {w} > {width}");
+        }
+        // Output options: the widest summary fits its button.
+        let button = WIDTH - 2.0 * PAD_LARGE - 20.0 - 186.0 - CONFLICT_COMBO_WIDTH - 30.0;
+        for text in [
+            tf(Key::OutputButton, &[&"TIFF 16-bit  ·  AdobeRGB"]),
+            tf(Key::OutputButton, &[&t(Key::CameraJpegOutput)]),
+        ] {
+            let w = text_width(&ctx, &text, theme::font_small_bold());
+            assert!(w <= button, "output button {lang:?}: {w} > {button}");
+        }
+        for (key, font) in [
+            (Key::FormatLabel, theme::font_body()),
+            (Key::ColorSpaceLabel, theme::font_body()),
+            (Key::NameTemplateLabel, theme::font_body()),
+        ] {
+            let w = text_width(&ctx, t(key), font);
+            assert!(w <= MODAL_LABEL_WIDTH, "{key:?} {lang:?}: {w}");
+        }
+        for (_, label) in CONFLICT_CHOICES {
+            let w = text_width(&ctx, t(label), theme::font_body()) + 30.0;
+            assert!(w <= CONFLICT_COMBO_WIDTH, "{label:?} {lang:?}: {w}");
         }
         // Footer row: checkbox, language combo, credit.
         let footer = text_width(&ctx, t(Key::CheckUpdates), theme::font_small())
@@ -1565,6 +1794,70 @@ mod layout_tests {
         }
         i18n::set_language(Lang::English);
         height
+    }
+
+    fn app_for_test(ctx: &egui::Context, dir: &Path) -> CcooNverterApp {
+        let settings = AppSettings {
+            check_updates: false,
+            ..Default::default()
+        };
+        CcooNverterApp::new(
+            ctx.clone(),
+            AppPaths::with_root(dir.to_path_buf()),
+            settings,
+            PresetStore::default(),
+        )
+    }
+
+    #[test]
+    fn output_and_issue_modals_fit_the_window() {
+        for lang in [Lang::English, Lang::Korean] {
+            i18n::set_language(lang);
+            let ctx = context();
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = app_for_test(&ctx, dir.path());
+            app.output_options_open = true;
+            app.settings.color_space = ColorSpace::AdobeRgb;
+            app.issues = Some(vec![BatchIssue {
+                file: "DSC_0001.NEF".into(),
+                reason: t(Key::FailUnsupportedCompression).to_string(),
+            }]);
+            for _ in 0..3 {
+                run_frame(&ctx, |_| {
+                    app.draw_output_options_modal(&ctx);
+                });
+            }
+            let area = ctx.memory(|m| m.area_rect(Id::unique("output_options_modal")));
+            let rect = area.expect("modal area");
+            assert!(rect.height() <= HEIGHT, "{lang:?}: {}", rect.height());
+            assert!(rect.width() <= WIDTH, "{lang:?}: {}", rect.width());
+            app.settings.extract_embedded = true;
+            for _ in 0..3 {
+                run_frame(&ctx, |_| {
+                    app.draw_output_options_modal(&ctx);
+                    app.draw_issues_modal(&ctx);
+                });
+            }
+            i18n::set_language(Lang::English);
+        }
+    }
+
+    /// The update check is on for a new user; it does not depend on the
+    /// settings the layout tests use.
+    #[test]
+    fn update_check_is_on_by_default_for_a_new_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = AppSettings::load(&dir.path().join("settings.json"));
+        assert!(settings.check_updates);
+        let ctx = context();
+        let app = CcooNverterApp::new(
+            ctx,
+            AppPaths::with_root(dir.path().to_path_buf()),
+            settings,
+            PresetStore::default(),
+        );
+        assert!(app.check_updates);
+        assert!(app.update_rx.is_some(), "the background check was started");
     }
 
     #[test]

@@ -441,7 +441,8 @@ pub fn desired_request(
     settings: &ccoonverter_core::ConvertSettings,
 ) -> Option<RenderRequest> {
     let file = files.get(index)?.clone();
-    let params = (!settings.extract_embedded).then(|| RenderParams::from(settings));
+    // The panel draws on an sRGB display whatever the output colour space is.
+    let params = (!settings.extract_embedded).then(|| RenderParams::for_display(settings));
     Some(RenderRequest {
         file,
         params,

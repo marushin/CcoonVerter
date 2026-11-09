@@ -14,8 +14,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ccoonverter_core::config;
+use ccoonverter_core::error::FailureKind;
 use ccoonverter_core::job::{self, BatchSummary, FileStatus, Progress};
-use ccoonverter_core::{ConflictPolicy, ConvertSettings, FileTask, PictureStyle, WhiteBalance};
+use ccoonverter_core::naming::{self, TemplateError};
+use ccoonverter_core::{
+    ColorSpace, ConflictPolicy, ConvertSettings, FileResult, FileTask, OutputFormat, PictureStyle,
+    WhiteBalance,
+};
 
 use crate::i18n::{t, tf, Key};
 
@@ -44,6 +49,10 @@ pub struct UiSettings {
     /// Output sharpening (no slider in the UI; kept in presets and settings).
     pub sharpen: f32,
     pub keep_source_date: bool,
+    pub output_format: OutputFormat,
+    pub color_space: ColorSpace,
+    /// Raw text of the file name template; validated when a batch starts.
+    pub filename_template: String,
 }
 
 impl Default for UiSettings {
@@ -101,6 +110,9 @@ impl UiSettings {
             tone_curve: s.tone_curve,
             sharpen: s.sharpen,
             keep_source_date: s.keep_source_date,
+            output_format: s.output_format,
+            color_space: s.color_space,
+            filename_template: s.filename_template,
         }
     }
 
@@ -141,7 +153,38 @@ impl UiSettings {
             tone_curve: self.tone_curve,
             sharpen: self.sharpen.clamp(config::MIN_SHARPEN, config::MAX_SHARPEN),
             keep_source_date: self.keep_source_date,
+            output_format: self.output_format,
+            color_space: self.color_space,
+            filename_template: self.filename_template.clone(),
         }
+    }
+
+    /// The format actually written: camera JPEG mode stays JPEG.
+    pub fn effective_format(&self) -> OutputFormat {
+        if self.extract_embedded {
+            OutputFormat::Jpeg
+        } else {
+            self.output_format
+        }
+    }
+
+    /// Short description of the output, for the button that opens its options.
+    pub fn output_summary(&self) -> String {
+        if self.extract_embedded {
+            t(Key::CameraJpegOutput).to_string()
+        } else {
+            format!(
+                "{}  ·  {}",
+                self.output_format.label(),
+                self.color_space.label()
+            )
+        }
+    }
+
+    /// Live example of the resulting file name, or the reason it is invalid.
+    pub fn name_example(&self) -> Result<String, String> {
+        naming::example_name(&self.filename_template, self.effective_format().extension())
+            .map_err(|e| template_error_text(&e))
     }
 
     /// RESET button: RAW adjustments back to defaults (Python `reset_adjustments`).
@@ -181,6 +224,35 @@ pub fn conflict_label(p: ConflictPolicy) -> &'static str {
         .find(|(c, _)| *c == p)
         .map(|(_, l)| t(*l))
         .unwrap_or_else(|| t(Key::ConflictSuffix))
+}
+
+/// One-line description of a format, shown under its combo box.
+pub fn format_note(format: OutputFormat) -> Key {
+    match format {
+        OutputFormat::Jpeg => Key::NoteJpeg,
+        OutputFormat::Png => Key::NotePng,
+        OutputFormat::Tiff16 => Key::NoteTiff,
+        OutputFormat::Webp => Key::NoteWebp,
+    }
+}
+
+/// One-line description of a colour space, shown under its combo box.
+pub fn color_note(space: ColorSpace) -> Key {
+    match space {
+        ColorSpace::Srgb => Key::NoteSrgb,
+        ColorSpace::AdobeRgb => Key::NoteAdobe,
+    }
+}
+
+fn template_error_text(e: &TemplateError) -> String {
+    match e {
+        TemplateError::Empty => t(Key::TemplateEmpty).to_string(),
+        TemplateError::TooLong => t(Key::TemplateTooLong).to_string(),
+        TemplateError::PathSeparator => t(Key::TemplatePathSeparator).to_string(),
+        TemplateError::Traversal => t(Key::TemplateTraversal).to_string(),
+        TemplateError::UnbalancedBrace => t(Key::TemplateBrace).to_string(),
+        TemplateError::UnknownToken(token) => tf(Key::TemplateUnknownToken, &[token]),
+    }
 }
 
 /// Display name of a white balance mode (the JSON name stays English).
@@ -232,6 +304,10 @@ pub fn resolve_output_folder(source: &Path, custom: &str) -> PathBuf {
     log::info!("Using default output folder: {}", out.display());
     out
 }
+
+/// Progress messages are limited to this rate, so a large batch cannot flood
+/// the channel while the UI thread is busy.
+pub const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Why a batch could not start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,8 +507,15 @@ impl RunningBatch {
         let handle = std::thread::Builder::new()
             .name("ccoon-batch".into())
             .spawn(move || {
-                job::run_batch(&batch.tasks, &settings, threads, Some(tx), &worker_cancel)
-                    .map_err(|e| e.to_string())
+                job::run_batch_with(
+                    &batch.tasks,
+                    &settings,
+                    threads,
+                    PROGRESS_INTERVAL,
+                    Some(tx),
+                    &worker_cancel,
+                )
+                .map_err(|e| e.to_string())
             })?;
         Ok(Self {
             output_dir,
@@ -597,6 +680,68 @@ pub fn format_elapsed(seconds: f64) -> String {
     }
 }
 
+/// A file that needs the user's attention after a batch: a failure, or a
+/// fallback worth knowing about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchIssue {
+    pub file: String,
+    pub reason: String,
+}
+
+fn camera_model(message: &str) -> Option<&str> {
+    let start = message.find("model '")? + "model '".len();
+    let len = message[start..].find('\'')?;
+    Some(&message[start..start + len]).filter(|m| !m.is_empty())
+}
+
+/// Readable, translated reason for one failed file.
+pub fn failure_reason(r: &FileResult) -> String {
+    let detail = r.message.as_deref().unwrap_or_default();
+    let mut text = match r.failure.unwrap_or(FailureKind::Internal) {
+        FailureKind::UnsupportedCamera => match camera_model(detail) {
+            Some(model) => tf(Key::FailUnsupportedCamera, &[&model]),
+            None => t(Key::FailUnsupportedCameraUnnamed).to_string(),
+        },
+        FailureKind::UnsupportedCompression => t(Key::FailUnsupportedCompression).to_string(),
+        FailureKind::Unreadable => t(Key::FailUnreadable).to_string(),
+        FailureKind::NoEmbeddedJpeg => t(Key::FailNoEmbeddedJpeg).to_string(),
+        FailureKind::Disk => tf(Key::FailDisk, &[&detail]),
+        FailureKind::Encode => tf(Key::FailEncode, &[&detail]),
+        FailureKind::Internal => tf(Key::FailInternal, &[&detail]),
+    };
+    if r.camera_jpeg_available {
+        text.push(' ');
+        text.push_str(t(Key::FailCameraJpegHint));
+    }
+    text
+}
+
+/// Every failed file of a batch, plus files that fell back from camera JPEG
+/// extraction to RAW development.
+pub fn batch_issues(summary: &BatchSummary) -> Vec<BatchIssue> {
+    let name = |r: &FileResult| {
+        r.source
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| r.source.display().to_string())
+    };
+    summary
+        .results
+        .iter()
+        .filter_map(|r| match r.status {
+            FileStatus::Failed => Some(BatchIssue {
+                file: name(r),
+                reason: failure_reason(r),
+            }),
+            FileStatus::Converted if r.message.is_some() => Some(BatchIssue {
+                file: name(r),
+                reason: t(Key::NoteFellBack).to_string(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Kind of the completion dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
@@ -699,6 +844,9 @@ mod tests {
             tone_curve: false,
             sharpen: 0.8,
             keep_source_date: true,
+            output_format: OutputFormat::Webp,
+            color_space: ColorSpace::AdobeRgb,
+            filename_template: "{date}_{seq}".into(),
         };
         let ui = UiSettings::from_convert(&core);
         assert_eq!(ui.resize_text, "2000");
@@ -755,6 +903,9 @@ mod tests {
             tone_curve: false,
             sharpen: 0.0,
             keep_source_date: true,
+            output_format: OutputFormat::Png,
+            color_space: ColorSpace::AdobeRgb,
+            filename_template: "{seq}".into(),
         };
         ui.reset_raw_adjustments();
         assert_eq!(ui.exposure_ev, 0.0);
@@ -770,6 +921,9 @@ mod tests {
         assert!(ui.preserve_exif && ui.extract_embedded);
         assert_eq!(ui.on_conflict, ConflictPolicy::Overwrite);
         assert!(ui.keep_source_date, "not a RAW adjustment");
+        assert_eq!(ui.output_format, OutputFormat::Png);
+        assert_eq!(ui.color_space, ColorSpace::AdobeRgb);
+        assert_eq!(ui.filename_template, "{seq}");
     }
 
     #[test]
@@ -918,6 +1072,97 @@ mod tests {
     }
 
     #[test]
+    fn name_example_is_live_and_reports_errors() {
+        use crate::i18n::{set_language, Lang};
+        set_language(Lang::English);
+        let mut ui = UiSettings::default();
+        assert_eq!(ui.name_example().unwrap(), "IMG_1234.jpg");
+        ui.output_format = OutputFormat::Tiff16;
+        assert_eq!(ui.name_example().unwrap(), "IMG_1234.tif");
+        ui.filename_template = "{date}_{camera}_{seq}".into();
+        assert_eq!(ui.name_example().unwrap(), "2026-11-09_ILCE-7M4_0001.tif");
+        ui.extract_embedded = true;
+        assert!(ui.name_example().unwrap().ends_with(".jpg"), "camera JPEG");
+        for bad in ["a/b", "x\\y", "..{name}", "{oops}", "{name"] {
+            ui.filename_template = bad.into();
+            assert!(ui.name_example().is_err(), "{bad}");
+        }
+        ui.filename_template = "{oops}".into();
+        assert!(ui.name_example().unwrap_err().contains("oops"));
+    }
+
+    #[test]
+    fn output_summary_says_camera_jpeg_when_it_applies() {
+        use crate::i18n::{set_language, Lang};
+        set_language(Lang::English);
+        let mut ui = UiSettings {
+            output_format: OutputFormat::Tiff16,
+            color_space: ColorSpace::AdobeRgb,
+            ..Default::default()
+        };
+        assert!(ui.output_summary().contains("TIFF 16-bit"));
+        assert!(ui.output_summary().contains("AdobeRGB"));
+        ui.extract_embedded = true;
+        assert!(ui.output_summary().contains("camera"));
+    }
+
+    fn failed(message: &str, kind: FailureKind, jpeg: bool) -> FileResult {
+        FileResult {
+            source: PathBuf::from("D:/in/DSC_0001.NEF"),
+            status: FileStatus::Failed,
+            output: None,
+            method: None,
+            width: None,
+            height: None,
+            message: Some(message.into()),
+            failure: Some(kind),
+            camera_jpeg_available: jpeg,
+            duration_ms: 3,
+        }
+    }
+
+    #[test]
+    fn failure_list_tells_the_user_about_camera_jpeg_mode() {
+        use crate::i18n::{set_language, Lang};
+        set_language(Lang::English);
+        let he = failed(
+            "Cannot develop this RAW file: NEF compression Some(HighEfficency) is not supported",
+            FailureKind::UnsupportedCompression,
+            true,
+        );
+        let a7v = failed(
+            "Cannot develop: Error: Unknown camera, model 'ILCE-7M5', make: 'SONY', mode: 'arw6'",
+            FailureKind::UnsupportedCamera,
+            true,
+        );
+        let corrupt = failed("RAW processing error: bad", FailureKind::Unreadable, false);
+        let he_text = failure_reason(&he);
+        assert!(he_text.contains("compression"), "{he_text}");
+        assert!(he_text.contains("Extract Embedded JPEG"), "{he_text}");
+        let a7v_text = failure_reason(&a7v);
+        assert!(a7v_text.contains("ILCE-7M5"), "{a7v_text}");
+        assert!(a7v_text.contains("Extract Embedded JPEG"), "{a7v_text}");
+        assert!(!failure_reason(&corrupt).contains("Extract Embedded JPEG"));
+
+        set_language(Lang::Korean);
+        assert!(failure_reason(&he).contains("카메라 JPEG 추출"));
+        set_language(Lang::English);
+
+        let mut s = summary(1, 3, 0, false);
+        let fell_back = FileResult {
+            status: FileStatus::Converted,
+            message: Some("embedded JPEG not found".into()),
+            failure: None,
+            ..he.clone()
+        };
+        s.results = vec![he, a7v, corrupt, fell_back];
+        let issues = batch_issues(&s);
+        assert_eq!(issues.len(), 4);
+        assert_eq!(issues[0].file, "DSC_0001.NEF");
+        assert!(issues[3].reason.contains("developed"));
+    }
+
+    #[test]
     fn eta_and_elapsed_formatting() {
         assert_eq!(format_eta(None), "ETA: --:--");
         assert_eq!(format_eta(Some(Duration::ZERO)), "ETA: 00:00:00");
@@ -1010,6 +1255,8 @@ mod tests {
                 width: None,
                 height: None,
                 message: None,
+                failure: None,
+                camera_jpeg_available: false,
                 duration_ms: 0,
             },
         };
@@ -1156,6 +1403,23 @@ mod tests {
         assert_eq!(s.converted + s.cancelled + s.failed + s.skipped, 4);
         let msg = completion_message(&BatchOutcome::Finished(s), &out, Path::new("x.log"));
         assert_eq!(msg.title, "Cancelled");
+    }
+
+    #[test]
+    fn invalid_template_stops_the_batch_with_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.DNG"), synthetic_dng(&DngSpec::default())).unwrap();
+        let batch = prepare_batch(&dir.path().to_string_lossy(), "").unwrap();
+        let out = batch.output_dir.clone();
+        let bad = ConvertSettings {
+            filename_template: "../{name}".into(),
+            ..Default::default()
+        };
+        match RunningBatch::spawn(batch, bad, Some(1)).unwrap().wait() {
+            BatchOutcome::Error(e) => assert!(e.contains("template"), "{e}"),
+            other => panic!("expected error, got {other:?}"),
+        }
+        assert!(!out.exists(), "nothing written");
     }
 
     #[test]

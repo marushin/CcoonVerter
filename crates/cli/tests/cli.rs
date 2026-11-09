@@ -174,3 +174,54 @@ fn scan_and_info() {
     let text = String::from_utf8_lossy(&o.stdout);
     assert!(text.contains("Synthetic DNG"), "{text}");
 }
+
+#[test]
+fn format_extension_template_and_camera_jpeg_restriction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    make_source(&src, false);
+    let out = tmp.path().join("out");
+    let o = cli()
+        .args(["convert"])
+        .arg(&src)
+        .arg("--out")
+        .arg(&out)
+        .args([
+            "--format",
+            "png",
+            "--color-space",
+            "adobergb",
+            "--name-template",
+            "x_{seq}",
+            "-j",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let img = image::open(out.join("x_0001.png")).unwrap();
+    assert!(img.width() > 0);
+    assert!(!out.join("one.jpg").exists());
+
+    let o = cli()
+        .args(["convert"])
+        .arg(&src)
+        .arg("--out")
+        .arg(&out)
+        .args(["--embedded", "--format", "png"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--embedded"));
+
+    let o = cli()
+        .args(["convert"])
+        .arg(&src)
+        .arg("--out")
+        .arg(&out)
+        .args(["--name-template", "../evil"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("template"));
+}

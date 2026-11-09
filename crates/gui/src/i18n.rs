@@ -118,7 +118,7 @@ strings! {
     ResizeLabel => "Resize (Long Edge px):", "긴 변 크기 (px):";
     ResizeHint => "0 for original", "0이면 원본 크기";
     ResizeOriginal => "(0 = Original)", "(0 = 원본)";
-    QualityLabel => "JPG Quality (1-100):", "JPG 품질 (1-100):";
+    QualityLabel => "Quality (1-100):", "품질 (1-100):";
     RawAdjustments => "RAW ADJUSTMENTS", "RAW 현상 조정";
     Reset => "RESET", "초기화";
     ToneCurve => "Tone Curve", "톤 커브";
@@ -132,6 +132,47 @@ strings! {
     SelectPreset => "Select Preset...", "프리셋 선택...";
     Save => "SAVE", "저장";
     Delete => "DELETE", "삭제";
+
+    // Output options
+    OutputButton => "OUTPUT:  {0}", "출력:  {0}";
+    CameraJpegOutput => "JPEG (camera)", "JPEG (카메라 원본)";
+    OutputOptionsTitle => "OUTPUT OPTIONS", "출력 옵션";
+    FormatLabel => "File format:", "파일 형식:";
+    ColorSpaceLabel => "Color space:", "색 공간:";
+    NameTemplateLabel => "File name:", "파일 이름:";
+    NameExample => "Example: {0}", "예: {0}";
+    NameTokens => "Tokens: {name} {date} {time} {seq} {camera} {ext}", "사용 가능: {name} {date} {time} {seq} {camera} {ext}";
+    Close => "CLOSE", "닫기";
+    CameraJpegOnly => "Camera JPEG mode always writes the camera's own JPEG. File format and color space are not used; the file name still applies.", "카메라 JPEG 추출은 항상 카메라가 만든 JPEG 그대로 저장합니다. 파일 형식과 색 공간은 적용되지 않고, 파일 이름만 적용됩니다.";
+    NoteJpeg => "Smallest files, 8-bit. Quality slider applies.", "파일이 가장 작습니다. 8비트이며 품질 슬라이더가 적용됩니다.";
+    NotePng => "8-bit, lossless. Larger files; the quality slider is not used.", "8비트 무손실입니다. 파일이 크고 품질 슬라이더는 쓰지 않습니다.";
+    NoteTiff => "16 bits per channel, uncompressed. For further editing; very large files.", "채널당 16비트 비압축입니다. 추가 보정용이며 파일이 매우 큽니다.";
+    NoteWebp => "Lossy, 8-bit, smaller than JPEG. Quality slider applies. Up to 16383 pixels per side.", "손실 압축 8비트이며 JPEG보다 작습니다. 품질 슬라이더가 적용됩니다. 한 변 최대 16383픽셀입니다.";
+    NoteSrgb => "Right for screens and the web.", "화면과 웹에 알맞습니다.";
+    NoteAdobe => "For printing workflows. The profile is AdobeRGB-compatible. rawler clips colors to sRGB before this step, so it gains less than a true wide-gamut pipeline.", "인쇄 작업용입니다. 프로파일은 AdobeRGB 호환입니다. rawler가 이 단계 전에 색을 sRGB로 잘라 내므로, 실제 광색역 처리만큼 색이 넓어지지는 않습니다.";
+    TipOutputOptions => "Choose the file format, color space and file name of the converted files.", "변환 결과의 파일 형식, 색 공간, 파일 이름을 고릅니다.";
+    TipFormat => "File type written for every photo. Camera JPEG mode is always JPEG.", "사진마다 저장할 파일 형식입니다. 카메라 JPEG 추출은 항상 JPEG입니다.";
+    TipColorSpace => "Color space of the output, with an ICC profile embedded in the file.", "결과의 색 공간입니다. 파일에 ICC 프로파일을 함께 넣습니다.";
+    TipNameTemplate => "Names the output files. {date} uses the capture date, or the file date when there is none. {seq} counts the batch in file order. The extension follows the format.", "결과 파일 이름입니다. {date}는 촬영일을 쓰고, 없으면 파일 날짜를 씁니다. {seq}는 파일 순서대로 매깁니다. 확장자는 파일 형식을 따릅니다.";
+    TemplateEmpty => "The file name is empty.", "파일 이름이 비어 있습니다.";
+    TemplateTooLong => "The file name is too long.", "파일 이름이 너무 깁니다.";
+    TemplatePathSeparator => "A file name cannot contain / or \\.", "파일 이름에는 / 나 \\ 를 쓸 수 없습니다.";
+    TemplateTraversal => "A file name cannot contain two dots in a row.", "파일 이름에 점을 두 개 연속으로 쓸 수 없습니다.";
+    TemplateBrace => "A { or } has no partner.", "{ 또는 } 의 짝이 맞지 않습니다.";
+    TemplateUnknownToken => "Unknown token {{0}}.", "알 수 없는 항목입니다: {{0}}";
+
+    // Files that need attention after a batch
+    IssuesTitle => "{0} file(s) need attention", "확인이 필요한 파일 {0}개";
+    FailUnsupportedCamera => "RAW development does not support this camera ({0}) yet.", "이 카메라({0})는 아직 RAW 현상을 지원하지 않습니다.";
+    FailUnsupportedCameraUnnamed => "RAW development does not support this camera yet.", "이 카메라는 아직 RAW 현상을 지원하지 않습니다.";
+    FailUnsupportedCompression => "This RAW compression cannot be developed yet (for example Nikon High Efficiency).", "이 RAW 압축 방식은 아직 현상할 수 없습니다(예: Nikon High Efficiency).";
+    FailUnreadable => "The file is damaged or is not a RAW file this app can read.", "파일이 손상되었거나 이 앱이 읽을 수 없는 RAW 파일입니다.";
+    FailNoEmbeddedJpeg => "No camera JPEG was found in this file.", "이 파일에서 카메라 JPEG을 찾지 못했습니다.";
+    FailDisk => "Could not read or write the file: {0}", "파일을 읽거나 쓰지 못했습니다: {0}";
+    FailEncode => "The output could not be written: {0}", "결과 파일을 만들지 못했습니다: {0}";
+    FailInternal => "Unexpected error: {0}", "예기치 못한 오류: {0}";
+    FailCameraJpegHint => "Turn on \"Extract Embedded JPEG\" to get the camera's JPEG from this file.", "\"카메라 JPEG 추출\"을 켜면 이 파일에서 카메라 JPEG을 꺼낼 수 있습니다.";
+    NoteFellBack => "No camera JPEG in this file, so the RAW was developed instead.", "이 파일에 카메라 JPEG이 없어 대신 RAW를 현상했습니다.";
 
     // White balance and picture style names
     WbCameraDefault => "Camera Default", "카메라 기본값";
@@ -245,13 +286,13 @@ strings! {
     // Tooltips
     TipSource => "Folder with your RAW files. Subfolders are included.", "RAW 파일이 있는 폴더입니다. 하위 폴더까지 함께 변환합니다.";
     TipBrowse => "Pick a folder.", "폴더를 고릅니다.";
-    TipOutput => "Where the JPGs go. Leave empty to use Converted_JPG inside the source folder.", "JPG를 저장할 폴더입니다. 비워 두면 원본 폴더 안의 Converted_JPG에 저장합니다.";
-    TipConflict => "What to do when a JPG with the same name already exists.", "같은 이름의 JPG가 이미 있을 때 어떻게 할지 정합니다.";
-    TipEmbedded => "Uses the JPEG the camera stored inside the RAW. Fastest; RAW adjustments do not apply.", "카메라가 RAW 안에 저장한 JPEG을 그대로 꺼냅니다. 가장 빠르지만 RAW 조정은 적용되지 않습니다.";
-    TipExif => "Copies shooting data into the JPG: camera, lens, exposure, date, GPS and rating where the file has them. Not all metadata may be copied identically.", "카메라, 렌즈, 노출, 촬영 일시, GPS, 별점을 파일에 있는 만큼 JPG에 기록합니다. 일부 정보는 원본과 똑같이 복사되지 않을 수 있습니다.";
-    TipKeepDate => "Gives the JPG the same modified date as its RAW file.", "JPG의 수정한 날짜를 RAW 파일과 같게 맞춥니다.";
+    TipOutput => "Where the output goes. Leave empty to use Converted_JPG inside the source folder.", "결과를 저장할 폴더입니다. 비워 두면 원본 폴더 안의 Converted_JPG에 저장합니다.";
+    TipConflict => "What to do when an output with the same name already exists.", "같은 이름의 결과 파일이 이미 있을 때 어떻게 할지 정합니다.";
+    TipEmbedded => "Uses the JPEG the camera stored inside the RAW. Fastest; output is always JPEG and RAW adjustments do not apply.", "카메라가 RAW 안에 저장한 JPEG을 그대로 꺼냅니다. 가장 빠르며, 결과는 항상 JPEG이고 RAW 조정은 적용되지 않습니다.";
+    TipExif => "Copies shooting data into the output: camera, lens, exposure, date, GPS and rating where the file has them. Not all metadata may be copied identically.", "카메라, 렌즈, 노출, 촬영 일시, GPS, 별점을 파일에 있는 만큼 결과 파일에 기록합니다. 일부 정보는 원본과 똑같이 복사되지 않을 수 있습니다.";
+    TipKeepDate => "Gives the output the same modified date as its RAW file.", "결과 파일의 수정한 날짜를 RAW 파일과 같게 맞춥니다.";
     TipResize => "Long edge of the output in pixels. 0 keeps the full size.", "결과 이미지의 긴 변 픽셀 수입니다. 0이면 원본 크기를 유지합니다.";
-    TipQuality => "Higher means better quality and larger files. 90 is a good default.", "높을수록 화질이 좋아지고 파일이 커집니다. 보통 90이면 충분합니다.";
+    TipQuality => "JPEG and WebP: higher means better quality and larger files. 90 is a good default.", "JPEG과 WebP에 적용됩니다. 높을수록 화질이 좋아지고 파일이 커집니다. 보통 90이면 충분합니다.";
     TipToneCurve => "Applies a gentle film-like contrast curve, close to a camera JPEG.", "카메라 JPEG에 가까운 부드러운 S자 대비 커브를 적용합니다.";
     TipReset => "Returns the RAW adjustments below to their defaults.", "아래 RAW 조정값을 기본값으로 되돌립니다.";
     TipWhiteBalance => "Camera Default uses the camera's setting. Auto estimates it from the picture.", "카메라 기본값은 촬영 시 설정을 쓰고, 자동은 사진에서 화이트 밸런스를 추정합니다.";
