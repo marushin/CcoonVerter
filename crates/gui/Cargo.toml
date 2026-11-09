@@ -37,6 +37,7 @@ windows-sys.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+egui_kittest.workspace = true
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource.workspace = true

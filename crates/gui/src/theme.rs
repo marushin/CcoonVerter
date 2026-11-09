@@ -1,70 +1,83 @@
-//! Colours, fonts sizes and the egui style (port of the Python `config.py` palette).
+//! Colours, font sizes, the radius scale and the egui style: "warm darkroom".
+//!
+//! Three rules. The area around the photo is strictly neutral grey, so colour
+//! judgement is not biased ([`PHOTO_SURROUND`] and friends have R = G = B).
+//! The chrome around it may be very slightly warm. The butter accent appears
+//! only on the primary button and on the value being manipulated.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Stroke, TextStyle, Theme, Vec2,
 };
 
-/// Window background (`COLOR_BG`).
-pub const BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
-/// Panel background (`COLOR_SURFACE`).
-pub const PANEL: Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2b);
-/// Gold accent (`COLOR_ACCENT`).
-pub const ACCENT: Color32 = Color32::from_rgb(0xD4, 0xAF, 0x37);
-/// Slightly darker gold used on hover.
-pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xb8, 0x96, 0x2e);
-/// Normal text (`COLOR_TEXT`).
-pub const TEXT: Color32 = Color32::from_rgb(0xe0, 0xe0, 0xe0);
-/// Dimmed text (`COLOR_TEXT_DIM`).
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0xa0, 0xa0, 0xa0);
-/// Subtle borders (`COLOR_BORDER`).
-pub const BORDER: Color32 = Color32::from_rgb(0x3d, 0x3d, 0x3d);
-/// Muted red for CANCEL / DELETE.
-pub const DANGER: Color32 = Color32::from_rgb(0xe6, 0x4a, 0x19);
-/// Slider rail (CustomTkinter's dark slider background).
-pub const RAIL: Color32 = Color32::from_rgb(0x4a, 0x4d, 0x50);
+/// Window background: very slightly warm.
+pub const BG: Color32 = Color32::from_rgb(0x20, 0x1e, 0x1c);
+/// Panel background.
+pub const PANEL: Color32 = Color32::from_rgb(0x2b, 0x28, 0x25);
+/// Inputs and buttons sitting on a panel.
+pub const RAISED: Color32 = Color32::from_rgb(0x38, 0x34, 0x30);
+/// Subtle borders.
+pub const BORDER: Color32 = Color32::from_rgb(0x46, 0x41, 0x3b);
+/// Normal text.
+pub const TEXT: Color32 = Color32::from_rgb(0xee, 0xe8, 0xdf);
+/// Dimmed text and small section titles.
+pub const TEXT_DIM: Color32 = Color32::from_rgb(0xb5, 0xad, 0xa3);
 
-pub const SLIDER_RED: Color32 = Color32::from_rgb(0xff, 0x52, 0x52);
-pub const SLIDER_RED_HOVER: Color32 = Color32::from_rgb(0xff, 0x8a, 0x80);
-pub const SLIDER_GREEN: Color32 = Color32::from_rgb(0x69, 0xf0, 0xae);
-pub const SLIDER_GREEN_HOVER: Color32 = Color32::from_rgb(0xb9, 0xf6, 0xca);
-pub const SLIDER_BLUE: Color32 = Color32::from_rgb(0x44, 0x8a, 0xff);
-pub const SLIDER_BLUE_HOVER: Color32 = Color32::from_rgb(0x82, 0xb1, 0xff);
-pub const SLIDER_WHITE: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
-pub const SLIDER_WHITE_HOVER: Color32 = Color32::from_rgb(0xee, 0xee, 0xee);
+/// Everything directly around the photo. R = G = B on purpose.
+pub const PHOTO_SURROUND: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
+/// Preview controls: neutral too, because they sit next to the photo.
+pub const NEUTRAL_CONTROL: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+pub const NEUTRAL_ACTIVE: Color32 = Color32::from_rgb(0x5c, 0x5c, 0x5c);
+pub const NEUTRAL_TEXT: Color32 = Color32::from_rgb(0xe6, 0xe6, 0xe6);
+pub const NEUTRAL_DIM: Color32 = Color32::from_rgb(0xb0, 0xb0, 0xb0);
 
-/// Python paddings.
-pub const PAD_LARGE: f32 = 15.0;
+/// Butter, the mean of the icon's cube face (`assets/icon_256.png`).
+pub const ACCENT: Color32 = Color32::from_rgb(0xfc, 0xcb, 0x59);
+/// The icon's lighter butter highlight, for hover.
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xfc, 0xd5, 0x70);
+/// Text on butter: the icon's brown outline (#853417), darkened for contrast.
+pub const ON_ACCENT: Color32 = Color32::from_rgb(0x4a, 0x24, 0x10);
+
+/// Errors and destructive actions.
+pub const DANGER: Color32 = Color32::from_rgb(0xff, 0x8f, 0x70);
+/// Slider rail.
+pub const RAIL: Color32 = Color32::from_rgb(0x4e, 0x49, 0x43);
+/// Slider fill while not being moved.
+pub const FILL_IDLE: Color32 = Color32::from_rgb(0x9a, 0x93, 0x89);
+
+/// Radius scale: small marks, controls, panels and cards.
+pub const RADIUS_SMALL: u8 = 4;
+pub const RADIUS_MEDIUM: u8 = 8;
+pub const RADIUS_LARGE: u8 = 12;
+
+pub const PAD_LARGE: f32 = 14.0;
 pub const PAD_MEDIUM: f32 = 6.0;
 
 /// Name of the bold font family registered by [`crate::fonts`].
 pub const BOLD_FAMILY: &str = "bold";
 
-/// Python `FONT_HEADER` (Segoe UI 16 bold).
+/// Primary button text and card titles.
 pub fn font_header() -> FontId {
     FontId::new(16.0, FontFamily::Name(BOLD_FAMILY.into()))
 }
 
-/// Python `FONT_BODY_BOLD` (Segoe UI 12 bold).
 pub fn font_body_bold() -> FontId {
     FontId::new(13.0, FontFamily::Name(BOLD_FAMILY.into()))
 }
 
-/// Python `FONT_BODY` (Segoe UI 12).
 pub fn font_body() -> FontId {
     FontId::new(13.0, FontFamily::Proportional)
 }
 
-/// Python `("Segoe UI", 10)` notes.
+/// Notes, section titles and style names.
 pub fn font_small() -> FontId {
-    FontId::new(11.0, FontFamily::Proportional)
+    FontId::new(11.5, FontFamily::Proportional)
 }
 
-/// Python `("Segoe UI", 10, "bold")` (RESET button).
 pub fn font_small_bold() -> FontId {
-    FontId::new(11.0, FontFamily::Name(BOLD_FAMILY.into()))
+    FontId::new(11.5, FontFamily::Name(BOLD_FAMILY.into()))
 }
 
-/// Apply the dark/gold, square-cornered look to every egui style.
+/// Apply the dark, rounded look to every egui style.
 pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(Theme::Dark);
     ctx.style_mut_of(Theme::Dark, configure_style);
@@ -82,8 +95,6 @@ fn configure_style(style: &mut egui::Style) {
     .into();
 
     let s = &mut style.spacing;
-    // Vertical spacing is tighter than Python's grid so the whole window fits
-    // the 600x820 default size without scrolling.
     s.item_spacing = Vec2::new(PAD_MEDIUM, 4.0);
     s.button_padding = Vec2::new(10.0, 4.0);
     s.interact_size = Vec2::new(40.0, 26.0);
@@ -96,8 +107,8 @@ fn configure_style(style: &mut egui::Style) {
     v.panel_fill = BG;
     v.window_fill = PANEL;
     v.window_stroke = Stroke::new(1.0, BORDER);
-    v.window_corner_radius = CornerRadius::ZERO;
-    v.menu_corner_radius = CornerRadius::ZERO;
+    v.window_corner_radius = CornerRadius::same(RADIUS_LARGE);
+    v.menu_corner_radius = CornerRadius::same(RADIUS_MEDIUM);
     v.window_shadow = egui::epaint::Shadow {
         offset: [0, 6],
         blur: 16,
@@ -113,10 +124,10 @@ fn configure_style(style: &mut egui::Style) {
     v.extreme_bg_color = BG;
     v.text_edit_bg_color = Some(BG);
     v.faint_bg_color = PANEL;
-    v.hyperlink_color = ACCENT;
-    v.selection.bg_fill = Color32::from_rgb(0x6b, 0x58, 0x1c);
+    v.hyperlink_color = TEXT;
+    v.selection.bg_fill = Color32::from_rgb(0x6e, 0x58, 0x28);
     v.selection.stroke = Stroke::new(1.0, TEXT);
-    v.text_cursor.stroke = Stroke::new(2.0, ACCENT);
+    v.text_cursor.stroke = Stroke::new(2.0, TEXT);
     v.slider_trailing_fill = true;
 
     let w = &mut v.widgets;
@@ -127,7 +138,7 @@ fn configure_style(style: &mut egui::Style) {
         &mut w.active,
         &mut w.open,
     ] {
-        wv.corner_radius = CornerRadius::ZERO;
+        wv.corner_radius = CornerRadius::same(RADIUS_MEDIUM);
         wv.expansion = 0.0;
     }
     w.noninteractive.bg_fill = PANEL;
@@ -135,23 +146,96 @@ fn configure_style(style: &mut egui::Style) {
     w.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
     w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
 
-    w.inactive.bg_fill = BORDER;
-    w.inactive.weak_bg_fill = BG;
+    w.inactive.bg_fill = RAISED;
+    w.inactive.weak_bg_fill = RAISED;
     w.inactive.bg_stroke = Stroke::new(1.0, BORDER);
     w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
 
     w.hovered.bg_fill = BORDER;
     w.hovered.weak_bg_fill = BORDER;
-    w.hovered.bg_stroke = Stroke::new(1.0, ACCENT_HOVER);
+    w.hovered.bg_stroke = Stroke::new(1.0, FILL_IDLE);
     w.hovered.fg_stroke = Stroke::new(1.5, TEXT);
 
     w.active.bg_fill = BORDER;
     w.active.weak_bg_fill = BORDER;
-    w.active.bg_stroke = Stroke::new(1.0, ACCENT);
+    w.active.bg_stroke = Stroke::new(1.0, TEXT_DIM);
     w.active.fg_stroke = Stroke::new(2.0, TEXT);
 
-    w.open.bg_fill = PANEL;
-    w.open.weak_bg_fill = PANEL;
+    w.open.bg_fill = RAISED;
+    w.open.weak_bg_fill = RAISED;
     w.open.bg_stroke = Stroke::new(1.0, BORDER);
     w.open.fg_stroke = Stroke::new(1.0, TEXT);
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    fn linear(c: u8) -> f64 {
+        let v = f64::from(c) / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn luminance(c: Color32) -> f64 {
+        0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+    }
+
+    /// WCAG 2.x contrast ratio.
+    pub fn contrast(a: Color32, b: Color32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn text_contrast_meets_wcag_aa() {
+        let pairs = [
+            ("primary button text", ON_ACCENT, ACCENT),
+            ("primary button text, hovered", ON_ACCENT, ACCENT_HOVER),
+            ("text on background", TEXT, BG),
+            ("text on panel", TEXT, PANEL),
+            ("text on control", TEXT, RAISED),
+            ("dim text on background", TEXT_DIM, BG),
+            ("section title on panel", TEXT_DIM, PANEL),
+            ("dim text on control", TEXT_DIM, RAISED),
+            ("active value on panel", ACCENT, PANEL),
+            ("selected segment text", ON_ACCENT, ACCENT),
+            ("danger on panel", DANGER, PANEL),
+            ("danger on background", DANGER, BG),
+            ("preview control text", NEUTRAL_TEXT, NEUTRAL_CONTROL),
+            ("preview active text", NEUTRAL_TEXT, NEUTRAL_ACTIVE),
+            ("preview status text", NEUTRAL_DIM, PHOTO_SURROUND),
+            ("preview text", NEUTRAL_TEXT, PHOTO_SURROUND),
+        ];
+        for (name, fg, bg) in pairs {
+            let ratio = contrast(fg, bg);
+            println!("{name}: {ratio:.2}:1");
+            assert!(ratio >= 4.5, "{name}: {ratio:.2}");
+        }
+    }
+
+    #[test]
+    fn photo_surround_is_strictly_neutral() {
+        for c in [
+            PHOTO_SURROUND,
+            NEUTRAL_CONTROL,
+            NEUTRAL_ACTIVE,
+            NEUTRAL_TEXT,
+            NEUTRAL_DIM,
+        ] {
+            assert!(c.r() == c.g() && c.g() == c.b(), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn chrome_is_only_slightly_warm() {
+        for c in [BG, PANEL, RAISED, BORDER] {
+            let warmth = i32::from(c.r()) - i32::from(c.b());
+            assert!((1..=12).contains(&warmth), "{c:?}: {warmth}");
+        }
+    }
 }

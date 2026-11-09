@@ -25,7 +25,7 @@ pub fn apply(frame: &eframe::Frame) {
         DWMWA_USE_IMMERSIVE_DARK_MODE,
     };
 
-    use crate::theme::{ACCENT, BG, BORDER};
+    use crate::theme::{BG, BORDER, TEXT};
 
     let hwnd: HWND = match frame.window_handle().map(|h| h.as_raw()) {
         Ok(RawWindowHandle::Win32(h)) => h.hwnd.get() as HWND,
@@ -56,7 +56,7 @@ pub fn apply(frame: &eframe::Frame) {
     };
     set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
     set(DWMWA_CAPTION_COLOR, colorref(BG));
-    set(DWMWA_TEXT_COLOR, colorref(ACCENT));
+    set(DWMWA_TEXT_COLOR, colorref(TEXT));
     set(DWMWA_BORDER_COLOR, colorref(BORDER));
 }
 

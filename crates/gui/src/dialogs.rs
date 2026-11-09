@@ -1,13 +1,14 @@
 //! Native message boxes (Python `tkinter.messagebox` equivalents) via `rfd`.
 //! All calls block and must be made from the UI thread.
 
-use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
+#[cfg(not(test))]
+use rfd::MessageDialogResult;
+use rfd::{MessageButtons, MessageDialog, MessageLevel};
 
 use crate::controller::MessageKind;
 
 fn level(kind: MessageKind) -> MessageLevel {
     match kind {
-        MessageKind::Info => MessageLevel::Info,
         MessageKind::Warning => MessageLevel::Warning,
         MessageKind::Error => MessageLevel::Error,
     }
@@ -35,15 +36,20 @@ fn dialog(
     d
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Answer to yes/no questions in tests, where no native box may open.
+    pub static TEST_ANSWER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Show a message with an OK button.
 pub fn show(parent: Option<&eframe::Frame>, kind: MessageKind, title: &str, body: &str) {
+    if cfg!(test) {
+        return;
+    }
     dialog(parent, kind, title, body)
         .set_buttons(MessageButtons::Ok)
         .show();
-}
-
-pub fn info(parent: Option<&eframe::Frame>, title: &str, body: &str) {
-    show(parent, MessageKind::Info, title, body);
 }
 
 pub fn error(parent: Option<&eframe::Frame>, title: &str, body: &str) {
@@ -57,12 +63,19 @@ pub fn ask_yes_no(
     title: &str,
     body: &str,
 ) -> bool {
-    matches!(
+    #[cfg(test)]
+    let answer = {
+        let _ = (parent, kind, title, body);
+        TEST_ANSWER.with(|a| a.get())
+    };
+    #[cfg(not(test))]
+    let answer = matches!(
         dialog(parent, kind, title, body)
             .set_buttons(MessageButtons::YesNo)
             .show(),
         MessageDialogResult::Yes
-    )
+    );
+    answer
 }
 
 /// Python `messagebox.askyesno` (question icon ≈ info level).

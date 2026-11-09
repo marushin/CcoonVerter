@@ -28,7 +28,7 @@ use ccoonverter_core::AppSettings;
 use eframe::egui;
 
 /// 256 px copy of `assets/icon.png` (the 2048 px original would add 3 MB to the exe).
-const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon_256.png");
+pub(crate) const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon_256.png");
 
 fn load_icon() -> Option<egui::IconData> {
     match image::load_from_memory_with_format(ICON_PNG, image::ImageFormat::Png) {
@@ -83,8 +83,8 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(window_title())
         .with_app_id("ccoonverter")
-        .with_inner_size([600.0, 820.0])
-        .with_min_inner_size([520.0, 700.0]);
+        .with_inner_size(app::DEFAULT_WINDOW)
+        .with_min_inner_size(app::MIN_WINDOW);
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(Arc::new(icon));
     }

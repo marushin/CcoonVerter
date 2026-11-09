@@ -94,55 +94,61 @@ pub fn tf(key: Key, args: &[&dyn Display]) -> String {
 
 strings! {
     // Directory paths panel
-    DirectoryPaths => "DIRECTORY PATHS", "폴더 경로";
-    ShowPreview => "SHOW PREVIEW", "미리보기 표시";
-    HidePreview => "HIDE PREVIEW", "미리보기 숨기기";
-    Browse => "BROWSE", "찾아보기";
-    SourceFolder => "SOURCE FOLDER", "원본 폴더";
-    OutputFolderOptional => "OUTPUT FOLDER (Optional)", "출력 폴더 (선택)";
-    OutputHint => "Leave empty for default subfolder", "비워 두면 기본 하위 폴더에 저장";
-    IfOutputExists => "If output exists:", "같은 파일이 있으면:";
+    ShowPreview => "Show preview", "미리보기 표시";
+    HidePreview => "Hide preview", "미리보기 숨기기";
+    Browse => "Browse", "찾아보기";
+    SourceFolder => "RAW folder", "RAW 폴더";
+    OutputFolderOptional => "Save to (optional)", "저장 폴더 (선택)";
+    OutputHint => "Empty: a Converted_JPG folder inside the RAW folder", "비워 두면 RAW 폴더 안의 Converted_JPG에 저장";
+    IfOutputExists => "If a file exists", "이미 있으면";
     ConflictSuffix => "Add suffix", "접미사 붙이기";
     ConflictSkip => "Skip", "건너뛰기";
     ConflictOverwrite => "Overwrite", "덮어쓰기";
     DroppedSelected => "{0} dropped file(s) selected", "끌어다 놓은 파일 {0}개 선택됨";
-    Clear => "CLEAR", "해제";
+    Clear => "Clear", "해제";
     BrowseSourceTitle => "Select source folder", "원본 폴더 선택";
     BrowseOutputTitle => "Select output folder", "출력 폴더 선택";
 
     // Settings panel
-    Settings => "SETTINGS", "설정";
-    ExtractEmbedded => "Extract Embedded JPEG (Fast)", "카메라 JPEG 추출 (빠름)";
-    ExifPreservation => "EXIF PRESERVATION", "EXIF 보존";
+    ModeRaw => "RAW develop", "RAW 현상";
+    ModeCamera => "Camera JPEG", "카메라 JPEG";
+    ModeRawNote => "Develops each RAW with the adjustments below.", "RAW마다 아래 조정값으로 현상합니다.";
+    ModeCameraNote => "Takes the JPEG the camera saved inside each RAW. Fastest, and the RAW adjustments do not apply.", "카메라가 RAW 안에 저장한 JPEG을 꺼냅니다. 가장 빠르며 RAW 조정은 적용되지 않습니다.";
+    SectionStyle => "Style", "스타일";
+    SectionOutput => "Output", "출력";
+    SectionPresets => "Presets", "프리셋";
+    SectionApp => "App", "앱";
+    Advanced => "Advanced", "고급";
+    AdvancedActive => "Brightness {0}", "밝기 {0}";
+    ExifKeep => "Keep EXIF shooting data", "촬영 정보(EXIF) 유지";
     KeepFileDate => "Keep source file date", "원본 파일 날짜 유지";
-    ResizeLabel => "Resize (Long Edge px):", "긴 변 크기 (px):";
+    ResizeLabel => "Long edge (px)", "긴 변 (px)";
     ResizeHint => "0 for original", "0이면 원본 크기";
-    ResizeOriginal => "(0 = Original)", "(0 = 원본)";
-    QualityLabel => "Quality (1-100):", "품질 (1-100):";
-    RawAdjustments => "RAW ADJUSTMENTS", "RAW 현상 조정";
-    Reset => "RESET", "초기화";
+    QualityLabel => "Quality", "품질";
+    Reset => "Reset", "초기화";
     ToneCurve => "Tone Curve", "톤 커브";
-    WhiteBalanceLabel => "White Balance:", "화이트 밸런스:";
-    PictureStyleLabel => "Picture Style:", "픽처 스타일:";
-    ExposureLabel => "Exposure (EV):", "노출 보정 (EV):";
-    BrightnessLabel => "Brightness (0.0-2.0):", "밝기 (0.0-2.0):";
-    RgbBalanceLabel => "RGB Channel Balance:", "RGB 채널 균형:";
-    LevelsLabel => "Levels (Black/White):", "레벨 (블랙/화이트):";
-    Presets => "PRESETS", "프리셋";
-    SelectPreset => "Select Preset...", "프리셋 선택...";
-    Save => "SAVE", "저장";
-    Delete => "DELETE", "삭제";
+    WhiteBalanceLabel => "White balance", "화이트 밸런스";
+    ExposureLabel => "Exposure (EV)", "노출 (EV)";
+    BrightnessLabel => "Brightness", "밝기";
+    BrightnessNote => "Set by an older preset.", "이전 프리셋의 값입니다.";
+    RgbBalanceLabel => "RGB balance", "RGB 균형";
+    LevelsLabel => "Levels", "레벨";
+    LevelsBlack => "Black point", "블랙 포인트";
+    LevelsWhite => "White point", "화이트 포인트";
+    SelectPreset => "Choose a preset...", "프리셋 선택...";
+    Save => "Save", "저장";
+    Delete => "Delete", "삭제";
 
     // Output options
-    OutputButton => "OUTPUT:  {0}", "출력:  {0}";
+    OutputButton => "Format:  {0}", "형식:  {0}";
     CameraJpegOutput => "JPEG (camera)", "JPEG (카메라 원본)";
-    OutputOptionsTitle => "OUTPUT OPTIONS", "출력 옵션";
-    FormatLabel => "File format:", "파일 형식:";
-    ColorSpaceLabel => "Color space:", "색 공간:";
-    NameTemplateLabel => "File name:", "파일 이름:";
+    OutputOptionsTitle => "Output options", "출력 옵션";
+    FormatLabel => "File format", "파일 형식";
+    ColorSpaceLabel => "Color space", "색 공간";
+    NameTemplateLabel => "File name", "파일 이름";
     NameExample => "Example: {0}", "예: {0}";
     NameTokens => "Tokens: {name} {date} {time} {seq} {camera} {ext}", "사용 가능: {name} {date} {time} {seq} {camera} {ext}";
-    Close => "CLOSE", "닫기";
+    Close => "Close", "닫기";
     CameraJpegOnly => "Camera JPEG mode always writes the camera's own JPEG. File format and color space are not used; the file name still applies.", "카메라 JPEG 추출은 항상 카메라가 만든 JPEG 그대로 저장합니다. 파일 형식과 색 공간은 적용되지 않고, 파일 이름만 적용됩니다.";
     NoteJpeg => "Smallest files, 8-bit. Quality slider applies.", "파일이 가장 작습니다. 8비트이며 품질 슬라이더가 적용됩니다.";
     NotePng => "8-bit, lossless. Larger files; the quality slider is not used.", "8비트 무손실입니다. 파일이 크고 품질 슬라이더는 쓰지 않습니다.";
@@ -171,7 +177,7 @@ strings! {
     FailDisk => "Could not read or write the file: {0}", "파일을 읽거나 쓰지 못했습니다: {0}";
     FailEncode => "The output could not be written: {0}", "결과 파일을 만들지 못했습니다: {0}";
     FailInternal => "Unexpected error: {0}", "예기치 못한 오류: {0}";
-    FailCameraJpegHint => "Turn on \"Extract Embedded JPEG\" to get the camera's JPEG from this file.", "\"카메라 JPEG 추출\"을 켜면 이 파일에서 카메라 JPEG을 꺼낼 수 있습니다.";
+    FailCameraJpegHint => "Switch to Camera JPEG mode to get the camera's JPEG from this file.", "카메라 JPEG 모드로 바꾸면 이 파일에서 카메라 JPEG을 꺼낼 수 있습니다.";
     NoteFellBack => "No camera JPEG in this file, so the RAW was developed instead.", "이 파일에 카메라 JPEG이 없어 대신 RAW를 현상했습니다.";
 
     // White balance and picture style names
@@ -191,10 +197,10 @@ strings! {
     StyleBlackAndWhite => "Black & White", "흑백";
 
     // Actions and progress
-    StartButton => "Let's Get Cooking!", "변환 시작";
-    Converting => "Converting...", "변환 중...";
-    CancelButton => "CANCEL", "취소";
-    Ready => "READY", "준비됨";
+    StartButton => "Let's Get Cooking!", "맛있게 구워볼까요!";
+    Converting => "Cooking...", "맛있게 굽는 중...";
+    CancelButton => "Cancel", "취소";
+    Ready => "Ready when you are", "준비됐어요";
     ProgressLine => "Processing ({0}/{1}): {2} ({3}%)", "처리 중 ({0}/{1}): {2} ({3}%)";
     ProgressError => "Error", "오류";
     ProgressStarting => "Processing (0/{0}): ... (0%)", "처리 중 (0/{0}): ... (0%)";
@@ -215,19 +221,14 @@ strings! {
     EnterPresetName => "Enter preset name:", "프리셋 이름:";
     UpdateAvailable => "A New Version is Available!", "새 버전이 나왔습니다!";
     UpdateVersions => "Current: v{0}  →  Latest: v{1}", "현재: v{0}  →  최신: v{1}";
-    Download => "DOWNLOAD", "다운로드";
-    Later => "LATER", "나중에";
+    Download => "Download", "다운로드";
+    Later => "Later", "나중에";
 
     // Native dialogs
     TitleError => "Error", "오류";
-    TitleInfo => "Info", "알림";
-    TitleSuccess => "Success", "완료";
     TitleConfirm => "Confirm", "확인";
     TitleQuit => "Quit", "종료";
     TitleCancel => "Cancel", "변환 취소";
-    TitleCancelled => "Cancelled", "취소됨";
-    TitleReset => "Reset", "초기화";
-    TitleCompletedWithErrors => "Completed with Errors", "일부 파일 실패";
     SavePresetFailed => "Could not save presets:\n{0}", "프리셋을 저장하지 못했습니다:\n{0}";
     QuitWhileConverting => "A conversion is still running.\nCancel it and quit?", "아직 변환 중입니다.\n취소하고 종료할까요?";
     ConfirmCancelConversion => "Are you sure you want to cancel the conversion?", "변환을 취소할까요?";
@@ -237,15 +238,21 @@ strings! {
     ConfirmDeletePreset => "Delete preset '{0}'?", "프리셋 '{0}'을(를) 삭제할까요?";
     PresetDeleted => "Preset '{0}' deleted.", "프리셋 '{0}'을(를) 삭제했습니다.";
     CouldNotStart => "Could not start conversion:\n{0}", "변환을 시작하지 못했습니다:\n{0}";
-    OpenOutputFolderQuestion => "{0}\n\nOpen output folder?", "{0}\n\n출력 폴더를 열까요?";
     InvalidSourceFolder => "Please select a valid source folder.", "올바른 원본 폴더를 선택하세요.";
     NoRawFound => "No RAW files found in the selected folder.", "선택한 폴더에 RAW 파일이 없습니다.";
     FileSystemError => "File system error: {0}", "파일 시스템 오류: {0}";
     UnexpectedError => "An unexpected error occurred:\n{0}", "예기치 못한 오류가 발생했습니다:\n{0}";
-    ConversionCancelled => "Conversion cancelled.", "변환을 취소했습니다.";
-    SkippedLine => "Skipped (output exists): {0}\n", "건너뜀 (이미 있음): {0}개\n";
-    SuccessBody => "Successfully converted {0} file(s).\n{1}Time taken: {2}\nSaved to: {3}", "파일 {0}개를 변환했습니다.\n{1}걸린 시간: {2}\n저장 위치: {3}";
-    CompletedWithErrorsBody => "Conversion complete with some errors:\nSuccessful: {0}\nFailed: {1}\n{2}Time taken: {3}\n\nCheck {4} for details.\nSaved to: {5}", "변환은 끝났지만 일부 파일에서 오류가 났습니다.\n성공: {0}개\n실패: {1}개\n{2}걸린 시간: {3}\n\n자세한 내용은 {4} 파일을 확인하세요.\n저장 위치: {5}";
+    ResultDoneTitle => "All cooked!", "다 구웠어요!";
+    ResultPartialTitle => "Some files could not be converted", "일부 파일을 변환하지 못했습니다";
+    ResultCancelledTitle => "Conversion cancelled", "변환을 취소했습니다";
+    ResultErrorTitle => "The conversion stopped", "변환이 중단되었습니다";
+    ResultConverted => "Converted", "완료";
+    ResultSkipped => "Skipped", "건너뜀";
+    ResultFailed => "Failed", "실패";
+    ResultElapsed => "Time taken: {0}", "걸린 시간: {0}";
+    ResultSavedTo => "Saved to: {0}", "저장 위치: {0}";
+    ResultLogHint => "Details are in the log: {0}", "자세한 내용은 로그에 있습니다: {0}";
+    ResultOpenFolder => "Open folder", "폴더 열기";
     WindowOpenFailed => "Could not open the application window:\n{0}\n\n{1}", "프로그램 창을 열 수 없습니다:\n{0}\n\n{1}";
     RendererHintGlow => "This build draws with OpenGL 2.0+. Update the graphics driver, or (old GPU, remote desktop or VM) try a build with the wgpu renderer (`cargo build --release -p ccoonverter --features wgpu`).", "이 빌드는 OpenGL 2.0 이상으로 그립니다. 그래픽 드라이버를 업데이트하거나, 오래된 GPU, 원격 데스크톱, 가상 머신이라면 wgpu 렌더러 빌드를 사용해 보세요(`cargo build --release -p ccoonverter --features wgpu`).";
     RendererHintWgpu => "This build draws with wgpu (DirectX 12 / Vulkan / Metal). If no adapter is available (old GPU, remote desktop or VM), use the default OpenGL (glow) build.", "이 빌드는 wgpu(DirectX 12 / Vulkan / Metal)로 그립니다. 사용 가능한 어댑터가 없다면(오래된 GPU, 원격 데스크톱, 가상 머신) 기본 OpenGL(glow) 빌드를 사용하세요.";
@@ -261,23 +268,29 @@ strings! {
     DropIgnoredFiles => "Ignored {0} non-RAW file(s).", "RAW가 아닌 파일 {0}개를 무시했습니다.";
 
     // Preview panel
-    PreviewHeader => "PREVIEW", "미리보기";
-    ShowBefore => "SHOW BEFORE", "카메라 JPEG 보기";
-    ShowAfter => "SHOW AFTER", "현상 결과 보기";
-    CameraJpeg => "Camera JPEG", "카메라 JPEG";
-    CameraJpegTag => "CAMERA JPEG", "카메라 JPEG";
-    CompareTip => "Compare with the camera's embedded JPEG", "카메라가 RAW에 넣어 둔 JPEG과 비교합니다";
+    PreviewHeader => "Preview", "미리보기";
+    DropRawFolderHere => "Drop your RAW folder here", "RAW 폴더를 여기에 놓으세요";
+    EmptyHint => "Or pick one with Browse above. Single RAW files work too.", "위의 찾아보기로 골라도 되고, RAW 파일을 바로 놓아도 됩니다.";
+    ZoomFit => "Fit", "맞춤";
+    ZoomActual => "100%", "100%";
+    ZoomLoading => "Developing at full resolution...", "원본 해상도로 현상하는 중...";
+    Compare => "Compare", "비교";
+    Histogram => "Histogram", "히스토그램";
+    CompareDeveloped => "Developed", "현상 결과";
+    TipZoomFit => "Show the whole photo.", "사진 전체를 표시합니다.";
+    TipZoomActual => "Real pixels. Drag to move around; double-click the photo to go back.", "실제 픽셀로 봅니다. 드래그로 이동하고, 사진을 더블클릭하면 돌아갑니다.";
+    TipCompareNeedsCamera => "This file has no camera JPEG to compare with.", "이 파일에는 비교할 카메라 JPEG이 없습니다.";
+    TipHistogram => "Shows or hides the histogram.", "히스토그램을 표시하거나 숨깁니다.";
+    CameraJpegTag => "Camera JPEG", "카메라 JPEG";
+    CompareTip => "Left: the camera's JPEG. Right: your development. Drag the divider.", "왼쪽은 카메라 JPEG, 오른쪽은 현상 결과입니다. 경계선을 드래그해 보세요.";
     NoRawHere => "No RAW files here.", "RAW 파일이 없습니다.";
     NoRawInFolder => "No RAW files in this folder.", "이 폴더에 RAW 파일이 없습니다.";
-    SelectOrDrop => "Select a folder or drop RAW files.", "폴더를 선택하거나 RAW 파일을 끌어다 놓으세요.";
     LookingForRaw => "Looking for RAW files...", "RAW 파일을 찾는 중...";
-    PreviewUpdating => "Updating...", "적용 중...";
     RawCount => "{0} RAW file(s)", "RAW 파일 {0}개";
     PreviewDeveloping => "Developing...", "현상 중...";
     PreviewCantDevelop => "Can't develop this file ({0}). Camera JPEG shown.", "이 파일은 현상할 수 없습니다 ({0}). 카메라 JPEG을 표시합니다.";
     PreviewUnavailable => "Preview unavailable: {0}", "미리보기 불가: {0}";
     PausedWhileConverting => "Paused while converting.", "변환 중에는 잠시 멈춥니다.";
-    NoEmbeddedJpeg => "No embedded JPEG in this file.", "이 파일에는 카메라 JPEG이 없습니다.";
     LoadingPreview => "Loading preview...", "미리보기를 불러오는 중...";
     NoPreviewYet => "No preview yet.", "아직 미리보기가 없습니다.";
     PreviewPausedStatus => "Preview paused while converting.", "변환 중에는 미리보기를 멈춥니다.";
@@ -288,7 +301,7 @@ strings! {
     TipBrowse => "Pick a folder.", "폴더를 고릅니다.";
     TipOutput => "Where the output goes. Leave empty to use Converted_JPG inside the source folder.", "결과를 저장할 폴더입니다. 비워 두면 원본 폴더 안의 Converted_JPG에 저장합니다.";
     TipConflict => "What to do when an output with the same name already exists.", "같은 이름의 결과 파일이 이미 있을 때 어떻게 할지 정합니다.";
-    TipEmbedded => "Uses the JPEG the camera stored inside the RAW. Fastest; output is always JPEG and RAW adjustments do not apply.", "카메라가 RAW 안에 저장한 JPEG을 그대로 꺼냅니다. 가장 빠르며, 결과는 항상 JPEG이고 RAW 조정은 적용되지 않습니다.";
+    TipQualityUnused => "Camera JPEGs are saved as they are, so quality only applies when a long edge is set.", "카메라 JPEG은 그대로 저장하므로, 긴 변을 지정했을 때만 품질이 적용됩니다.";
     TipExif => "Copies shooting data into the output: camera, lens, exposure, date, GPS and rating where the file has them. Not all metadata may be copied identically.", "카메라, 렌즈, 노출, 촬영 일시, GPS, 별점을 파일에 있는 만큼 결과 파일에 기록합니다. 일부 정보는 원본과 똑같이 복사되지 않을 수 있습니다.";
     TipKeepDate => "Gives the output the same modified date as its RAW file.", "결과 파일의 수정한 날짜를 RAW 파일과 같게 맞춥니다.";
     TipResize => "Long edge of the output in pixels. 0 keeps the full size.", "결과 이미지의 긴 변 픽셀 수입니다. 0이면 원본 크기를 유지합니다.";
@@ -331,7 +344,12 @@ mod tests {
     }
 
     /// Keys whose Korean text legitimately has no Hangul or equals the English.
-    const SAME_IN_BOTH: &[Key] = &[Key::StyleHdr, Key::LanguageEnglish, Key::LanguageKorean];
+    const SAME_IN_BOTH: &[Key] = &[
+        Key::StyleHdr,
+        Key::ZoomActual,
+        Key::LanguageEnglish,
+        Key::LanguageKorean,
+    ];
 
     #[test]
     fn every_key_has_text_in_both_languages() {

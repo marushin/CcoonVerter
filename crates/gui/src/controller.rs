@@ -4,7 +4,7 @@
 //! UI values ([`UiSettings`]) → [`ConvertSettings`] → [`prepare_batch`]
 //! (validate source, resolve output, scan) → [`RunningBatch`] (one worker
 //! thread calling `job::run_batch` with an mpsc progress channel and an
-//! `Arc<AtomicBool>` cancel flag) → [`BatchSummary`] → [`completion_message`].
+//! `Arc<AtomicBool>` cancel flag) → [`BatchSummary`] → [`BatchReport`].
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -321,23 +321,12 @@ pub enum PrepareError {
 }
 
 impl PrepareError {
-    /// (kind, title, message) for the native message box; English matches Python.
-    pub fn dialog(&self) -> (MessageKind, String, String) {
-        let error = || (MessageKind::Error, t(Key::TitleError).to_string());
+    /// The sentence shown to the user.
+    pub fn message(&self) -> String {
         match self {
-            PrepareError::InvalidSource => {
-                let (kind, title) = error();
-                (kind, title, t(Key::InvalidSourceFolder).to_string())
-            }
-            PrepareError::NoFiles => (
-                MessageKind::Info,
-                t(Key::TitleInfo).to_string(),
-                t(Key::NoRawFound).to_string(),
-            ),
-            PrepareError::Scan(e) => {
-                let (kind, title) = error();
-                (kind, title, tf(Key::FileSystemError, &[e]))
-            }
+            PrepareError::InvalidSource => t(Key::InvalidSourceFolder).to_string(),
+            PrepareError::NoFiles => t(Key::NoRawFound).to_string(),
+            PrepareError::Scan(e) => tf(Key::FileSystemError, &[e]),
         }
     }
 }
@@ -742,80 +731,78 @@ pub fn batch_issues(summary: &BatchSummary) -> Vec<BatchIssue> {
         .collect()
 }
 
-/// Kind of the completion dialog.
+/// Kind of a native message box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
-    Info,
     Warning,
     Error,
 }
 
-/// Completion dialog content.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionMessage {
-    pub kind: MessageKind,
-    pub title: String,
-    pub body: String,
-    /// Offer "Open output folder?".
-    pub offer_open: bool,
+/// How a batch ended, for the result card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportKind {
+    Done,
+    Partial,
+    Cancelled,
+    Failed,
 }
 
-/// Build the completion message (Python texts, plus a skipped count when
-/// files were skipped because the output existed).
-pub fn completion_message(
-    outcome: &BatchOutcome,
-    output_dir: &Path,
-    log_file: &Path,
-) -> CompletionMessage {
-    match outcome {
-        BatchOutcome::Error(e) => CompletionMessage {
-            kind: MessageKind::Error,
-            title: t(Key::TitleError).to_string(),
-            body: tf(Key::UnexpectedError, &[e]),
-            offer_open: false,
-        },
-        BatchOutcome::Finished(s) if s.was_cancelled => CompletionMessage {
-            kind: MessageKind::Info,
-            title: t(Key::TitleCancelled).to_string(),
-            body: t(Key::ConversionCancelled).to_string(),
-            offer_open: s.converted > 0,
-        },
-        BatchOutcome::Finished(s) => {
-            let elapsed = format_elapsed(s.elapsed_secs);
-            let skipped = if s.skipped > 0 {
-                tf(Key::SkippedLine, &[&s.skipped])
-            } else {
-                String::new()
-            };
-            if s.failed == 0 {
-                CompletionMessage {
-                    kind: MessageKind::Info,
-                    title: t(Key::TitleSuccess).to_string(),
-                    body: tf(
-                        Key::SuccessBody,
-                        &[&s.converted, &skipped, &elapsed, &output_dir.display()],
-                    ),
-                    offer_open: true,
-                }
-            } else {
-                CompletionMessage {
-                    kind: MessageKind::Warning,
-                    title: t(Key::TitleCompletedWithErrors).to_string(),
-                    body: tf(
-                        Key::CompletedWithErrorsBody,
-                        &[
-                            &s.converted,
-                            &s.failed,
-                            &skipped,
-                            &elapsed,
-                            &log_file.display(),
-                            &output_dir.display(),
-                        ],
-                    ),
-                    offer_open: s.converted > 0,
-                }
+/// Everything the result card shows after a batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchReport {
+    pub kind: ReportKind,
+    pub title: String,
+    pub converted: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    /// "Time taken" line; empty when the batch never ran.
+    pub elapsed: String,
+    pub output_dir: PathBuf,
+    pub log_file: PathBuf,
+    pub issues: Vec<BatchIssue>,
+    /// Message of a batch that stopped with an error.
+    pub error: Option<String>,
+    /// There is something in the output folder to look at.
+    pub can_open: bool,
+}
+
+impl BatchReport {
+    pub fn new(outcome: &BatchOutcome, output_dir: &Path, log_file: &Path) -> Self {
+        let mut report = Self {
+            kind: ReportKind::Failed,
+            title: t(Key::ResultErrorTitle).to_string(),
+            converted: 0,
+            skipped: 0,
+            failed: 0,
+            elapsed: String::new(),
+            output_dir: output_dir.to_path_buf(),
+            log_file: log_file.to_path_buf(),
+            issues: Vec::new(),
+            error: None,
+            can_open: false,
+        };
+        match outcome {
+            BatchOutcome::Error(e) => report.error = Some(tf(Key::UnexpectedError, &[e])),
+            BatchOutcome::Finished(s) => {
+                report.converted = s.converted;
+                report.skipped = s.skipped;
+                report.failed = s.failed;
+                report.elapsed = tf(Key::ResultElapsed, &[&format_elapsed(s.elapsed_secs)]);
+                report.issues = batch_issues(s);
+                report.can_open = s.converted > 0 || s.skipped > 0;
+                (report.kind, report.title) = if s.was_cancelled {
+                    (
+                        ReportKind::Cancelled,
+                        t(Key::ResultCancelledTitle).to_string(),
+                    )
+                } else if s.failed > 0 {
+                    (ReportKind::Partial, t(Key::ResultPartialTitle).to_string())
+                } else {
+                    (ReportKind::Done, t(Key::ResultDoneTitle).to_string())
+                };
             }
         }
+        report
     }
 }
 
@@ -1138,14 +1125,14 @@ mod tests {
         let corrupt = failed("RAW processing error: bad", FailureKind::Unreadable, false);
         let he_text = failure_reason(&he);
         assert!(he_text.contains("compression"), "{he_text}");
-        assert!(he_text.contains("Extract Embedded JPEG"), "{he_text}");
+        assert!(he_text.contains("Camera JPEG mode"), "{he_text}");
         let a7v_text = failure_reason(&a7v);
         assert!(a7v_text.contains("ILCE-7M5"), "{a7v_text}");
-        assert!(a7v_text.contains("Extract Embedded JPEG"), "{a7v_text}");
-        assert!(!failure_reason(&corrupt).contains("Extract Embedded JPEG"));
+        assert!(a7v_text.contains("Camera JPEG mode"), "{a7v_text}");
+        assert!(!failure_reason(&corrupt).contains("Camera JPEG mode"));
 
         set_language(Lang::Korean);
-        assert!(failure_reason(&he).contains("카메라 JPEG 추출"));
+        assert!(failure_reason(&he).contains("카메라 JPEG 모드"));
         set_language(Lang::English);
 
         let mut s = summary(1, 3, 0, false);
@@ -1195,50 +1182,45 @@ mod tests {
     }
 
     #[test]
-    fn completion_texts_match_python() {
+    fn report_counts_and_titles() {
         let out = Path::new("D:/사진/out");
         let log = Path::new("C:/logs/ccoonverter.log");
-        let ok = completion_message(&BatchOutcome::Finished(summary(3, 0, 0, false)), out, log);
-        assert_eq!(ok.kind, MessageKind::Info);
-        assert_eq!(ok.title, "Success");
-        assert_eq!(
-            ok.body,
-            format!(
-                "Successfully converted 3 file(s).\nTime taken: 1m 15s\nSaved to: {}",
-                out.display()
-            )
-        );
-        assert!(ok.offer_open);
+        let ok = BatchReport::new(&BatchOutcome::Finished(summary(3, 0, 0, false)), out, log);
+        assert_eq!(ok.kind, ReportKind::Done);
+        assert_eq!(ok.title, "All cooked!");
+        assert_eq!((ok.converted, ok.skipped, ok.failed), (3, 0, 0));
+        assert_eq!(ok.elapsed, "Time taken: 1m 15s");
+        assert!(ok.can_open);
 
-        let err = completion_message(&BatchOutcome::Finished(summary(2, 1, 0, false)), out, log);
-        assert_eq!(err.kind, MessageKind::Warning);
-        assert_eq!(err.title, "Completed with Errors");
-        assert!(err.body.starts_with(
-            "Conversion complete with some errors:\nSuccessful: 2\nFailed: 1\nTime taken: 1m 15s\n\nCheck "
-        ));
-        assert!(err.body.contains("ccoonverter.log for details."));
-        assert!(err.body.ends_with(&format!("Saved to: {}", out.display())));
+        let partial = BatchReport::new(&BatchOutcome::Finished(summary(2, 1, 0, false)), out, log);
+        assert_eq!(partial.kind, ReportKind::Partial);
+        assert_eq!(partial.title, "Some files could not be converted");
+        assert_eq!(partial.failed, 1);
+        assert!(partial.can_open);
 
-        let skipped =
-            completion_message(&BatchOutcome::Finished(summary(1, 0, 2, false)), out, log);
-        assert!(skipped.body.contains("Skipped (output exists): 2\n"));
+        let all_failed =
+            BatchReport::new(&BatchOutcome::Finished(summary(0, 2, 0, false)), out, log);
+        assert_eq!(all_failed.kind, ReportKind::Partial);
+        assert!(!all_failed.can_open, "nothing to open");
 
-        let cancelled =
-            completion_message(&BatchOutcome::Finished(summary(0, 0, 0, true)), out, log);
-        assert_eq!(cancelled.title, "Cancelled");
-        assert_eq!(cancelled.body, "Conversion cancelled.");
-        assert!(!cancelled.offer_open);
+        let skipped = BatchReport::new(&BatchOutcome::Finished(summary(1, 0, 2, false)), out, log);
+        assert_eq!(skipped.skipped, 2);
 
-        let e = completion_message(&BatchOutcome::Error("boom".into()), out, log);
-        assert_eq!(e.kind, MessageKind::Error);
-        assert!(e.body.contains("boom"));
+        let cancelled = BatchReport::new(&BatchOutcome::Finished(summary(0, 0, 0, true)), out, log);
+        assert_eq!(cancelled.kind, ReportKind::Cancelled);
+        assert_eq!(cancelled.title, "Conversion cancelled");
+        assert!(!cancelled.can_open);
+
+        let e = BatchReport::new(&BatchOutcome::Error("boom".into()), out, log);
+        assert_eq!(e.kind, ReportKind::Failed);
+        assert!(e.error.as_deref().unwrap().contains("boom"));
     }
 
     #[test]
     fn progress_view_texts() {
         use ccoonverter_core::FileResult;
         let mut v = ProgressView::default();
-        assert_eq!(v.status, "READY");
+        assert_eq!(v.status, "Ready when you are");
         assert_eq!(v.eta, "ETA: --:--");
         let mk = |done, status, output: Option<&str>| Progress {
             done,
@@ -1309,15 +1291,11 @@ mod tests {
             PrepareError::NoFiles
         );
         assert_eq!(
-            PrepareError::NoFiles.dialog(),
-            (
-                MessageKind::Info,
-                "Info".to_string(),
-                "No RAW files found in the selected folder.".to_string()
-            )
+            PrepareError::NoFiles.message(),
+            "No RAW files found in the selected folder."
         );
         assert_eq!(
-            PrepareError::InvalidSource.dialog().2,
+            PrepareError::InvalidSource.message(),
             "Please select a valid source folder."
         );
     }
@@ -1371,9 +1349,10 @@ mod tests {
                 let img = image::open(&f).unwrap();
                 assert_eq!(img.width().max(img.height()), 40, "{}", f.display());
             }
-            let msg = completion_message(&outcome, &out, Path::new("x.log"));
-            assert_eq!(msg.kind, MessageKind::Warning);
-            assert!(msg.body.contains("Successful: 2\nFailed: 1"));
+            let report = BatchReport::new(&outcome, &out, Path::new("x.log"));
+            assert_eq!(report.kind, ReportKind::Partial);
+            assert_eq!((report.converted, report.failed), (2, 1));
+            assert_eq!(report.issues.len(), 1, "the broken file is listed");
         }
     }
 
@@ -1401,8 +1380,8 @@ mod tests {
             s.converted
         );
         assert_eq!(s.converted + s.cancelled + s.failed + s.skipped, 4);
-        let msg = completion_message(&BatchOutcome::Finished(s), &out, Path::new("x.log"));
-        assert_eq!(msg.title, "Cancelled");
+        let report = BatchReport::new(&BatchOutcome::Finished(s), &out, Path::new("x.log"));
+        assert_eq!(report.kind, ReportKind::Cancelled);
     }
 
     #[test]

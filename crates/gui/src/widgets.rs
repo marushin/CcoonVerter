@@ -1,16 +1,19 @@
-//! Small custom widgets reproducing the CustomTkinter look of the Python app
-//! (flat gold buttons, outlined buttons, coloured sliders, thin progress bar,
-//! gold check boxes). Painting respects `ui.is_enabled()`: a disabled `Ui`
-//! already fades its painter, and the widgets do not react to input.
+//! Small custom widgets for the "warm darkroom" look. Painting respects
+//! `ui.is_enabled()`: a disabled `Ui` already fades its painter, and the
+//! widgets do not react to input. Every widget reports its name to egui's
+//! accessibility tree, which screen readers and the in-process UI tests use.
 
 use std::ops::RangeInclusive;
 
 use eframe::egui::{
-    self, pos2, vec2, Align, Align2, Color32, CursorIcon, FontId, Layout, Rect, Response, RichText,
-    Sense, Stroke, StrokeKind, Ui, Vec2,
+    self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, FontId, Layout, Rect,
+    Response, RichText, Role, Sense, Stroke, StrokeKind, TextureId, Ui, Vec2, WidgetInfo,
 };
 
-use crate::theme::{self, ACCENT, ACCENT_HOVER, BORDER, PANEL, RAIL, TEXT, TEXT_DIM};
+use crate::theme::{
+    self, ACCENT, ACCENT_HOVER, BORDER, DANGER, FILL_IDLE, NEUTRAL_ACTIVE, NEUTRAL_CONTROL,
+    NEUTRAL_TEXT, ON_ACCENT, RADIUS_MEDIUM, RADIUS_SMALL, RAIL, RAISED, TEXT, TEXT_DIM,
+};
 
 fn pointer_cursor(ui: &Ui, resp: &Response) {
     if resp.hovered() && ui.is_enabled() {
@@ -18,30 +21,51 @@ fn pointer_cursor(ui: &Ui, resp: &Response) {
     }
 }
 
+fn name_button(ui: &Ui, resp: &Response, text: &str) {
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, text));
+}
+
 /// Tooltip shown whether the widget is enabled or disabled.
 pub fn tip(resp: Response, text: &str) -> Response {
     resp.on_hover_text(text).on_disabled_hover_text(text)
 }
 
-/// Flat gold button with dark text (BROWSE, SAVE, "Let's Get Cooking!", DOWNLOAD).
-pub fn gold_button(ui: &mut Ui, text: &str, size: Vec2, font: FontId) -> Response {
+/// The one butter-coloured button with dark brown text.
+pub fn primary_button(ui: &mut Ui, text: &str, size: Vec2, font: FontId) -> Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
-        let fill = if resp.is_pointer_button_down_on() || resp.hovered() {
+        let fill = if resp.hovered() && ui.is_enabled() {
             ACCENT_HOVER
         } else {
             ACCENT
         };
         let p = ui.painter();
-        p.rect_filled(rect, 0.0, fill);
-        p.text(rect.center(), Align2::CENTER_CENTER, text, font, PANEL);
+        p.rect_filled(rect, RADIUS_MEDIUM, fill);
+        p.text(rect.center(), Align2::CENTER_CENTER, text, font, ON_ACCENT);
     }
+    name_button(ui, &resp, text);
     pointer_cursor(ui, &resp);
     resp
 }
 
-/// Outlined button (CANCEL, DELETE, RESET, LATER).
-pub fn outline_button(
+/// Quiet raised button for everything that is not the primary action.
+pub fn quiet_button(ui: &mut Ui, text: &str, size: Vec2, font: FontId) -> Response {
+    outlined(ui, text, size, font, TEXT, RAISED, BORDER)
+}
+
+/// Quiet button for destructive actions (delete, cancel).
+pub fn danger_button(ui: &mut Ui, text: &str, size: Vec2, font: FontId) -> Response {
+    outlined(ui, text, size, font, DANGER, Color32::TRANSPARENT, RAISED)
+}
+
+/// Quiet button next to the photo: strictly neutral colours.
+pub fn neutral_button(ui: &mut Ui, text: &str, size: Vec2, font: FontId, on: bool) -> Response {
+    let fill = if on { NEUTRAL_ACTIVE } else { NEUTRAL_CONTROL };
+    outlined(ui, text, size, font, NEUTRAL_TEXT, fill, NEUTRAL_ACTIVE)
+}
+
+fn outlined(
     ui: &mut Ui,
     text: &str,
     size: Vec2,
@@ -54,22 +78,77 @@ pub fn outline_button(
     if ui.is_rect_visible(rect) {
         let bg = if resp.hovered() { hover_fill } else { fill };
         let p = ui.painter();
-        p.rect_filled(rect, 0.0, bg);
-        p.rect_stroke(rect, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
+        p.rect_filled(rect, RADIUS_MEDIUM, bg);
         p.text(rect.center(), Align2::CENTER_CENTER, text, font, color);
     }
+    name_button(ui, &resp, text);
     pointer_cursor(ui, &resp);
     resp
 }
 
-/// Gold square check box. The label (if any) is drawn to the right.
+/// Colours of a [`segmented`] control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentStyle {
+    /// Butter on the selected segment (the mode of the adjustments).
+    Accent,
+    /// Neutral grey, for controls next to the photo.
+    Neutral,
+}
+
+/// Two or more options, one selected. Returns the index that was clicked.
+pub fn segmented(
+    ui: &mut Ui,
+    options: &[&str],
+    selected: usize,
+    size: Vec2,
+    style: SegmentStyle,
+) -> Option<usize> {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let (track, on_fill, on_text, off_text) = match style {
+        SegmentStyle::Accent => (RAISED, ACCENT, ON_ACCENT, TEXT),
+        SegmentStyle::Neutral => (
+            NEUTRAL_CONTROL,
+            NEUTRAL_ACTIVE,
+            NEUTRAL_TEXT,
+            theme::NEUTRAL_DIM,
+        ),
+    };
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, RADIUS_MEDIUM, track);
+    let w = rect.width() / options.len().max(1) as f32;
+    let mut clicked = None;
+    let enabled = ui.is_enabled();
+    for (i, label) in options.iter().enumerate() {
+        let seg = Rect::from_min_size(rect.min + vec2(w * i as f32, 0.0), vec2(w, rect.height()));
+        let resp = ui.interact(seg, ui.scope_id().with(("segment", *label)), Sense::click());
+        let on = i == selected;
+        if on {
+            painter.rect_filled(seg.shrink(2.0), RADIUS_MEDIUM - 2, on_fill);
+        } else if resp.hovered() && enabled {
+            painter.rect_filled(seg.shrink(2.0), RADIUS_MEDIUM - 2, BORDER);
+        }
+        let font = if on {
+            theme::font_body_bold()
+        } else {
+            theme::font_body()
+        };
+        let color = if on { on_text } else { off_text };
+        painter.text(seg.center(), Align2::CENTER_CENTER, *label, font, color);
+        resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, enabled, on, *label));
+        pointer_cursor(ui, &resp);
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+    }
+    clicked
+}
+
+/// Rounded check box whose label is part of the click target.
 pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str, font: FontId) -> Response {
     let box_size = 18.0;
-    let galley =
-        (!label.is_empty()).then(|| ui.painter().layout_no_wrap(label.to_owned(), font, TEXT));
-    let text_w = galley.as_ref().map_or(0.0, |g| g.size().x + 8.0);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, TEXT);
     let size = vec2(
-        box_size + text_w,
+        box_size + 8.0 + galley.size().x,
         box_size.max(ui.spacing().interact_size.y),
     );
     let (rect, mut resp) = ui.allocate_exact_size(size, Sense::click());
@@ -85,48 +164,59 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str, font: FontId) -> R
         );
         let hovered = resp.hovered();
         if *checked {
-            p.rect_filled(b, 0.0, if hovered { ACCENT_HOVER } else { ACCENT });
-            // Check mark.
+            p.rect_filled(b, RADIUS_SMALL, TEXT);
             let pts = [
                 pos2(b.left() + 4.0, b.center().y),
                 pos2(b.left() + 7.5, b.bottom() - 4.5),
                 pos2(b.right() - 3.5, b.top() + 4.5),
             ];
-            let stroke = Stroke::new(2.0, PANEL);
+            let stroke = Stroke::new(2.0, theme::PANEL);
             p.line_segment([pts[0], pts[1]], stroke);
             p.line_segment([pts[1], pts[2]], stroke);
         } else {
-            p.rect_filled(b, 0.0, theme::BG);
+            p.rect_filled(b, RADIUS_SMALL, theme::BG);
             p.rect_stroke(
                 b,
-                0.0,
-                Stroke::new(1.5, if hovered { ACCENT_HOVER } else { TEXT_DIM }),
+                RADIUS_SMALL,
+                Stroke::new(1.5, if hovered { TEXT } else { TEXT_DIM }),
                 StrokeKind::Inside,
             );
         }
-        if let Some(g) = galley {
-            let pos = pos2(b.right() + 8.0, rect.center().y - g.size().y / 2.0);
-            p.galley(pos, g, TEXT);
-        }
+        let pos = pos2(b.right() + 8.0, rect.center().y - galley.size().y / 2.0);
+        p.galley(pos, galley, TEXT);
     }
+    let enabled = ui.is_enabled();
+    let on = *checked;
+    resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, on, label));
     pointer_cursor(ui, &resp);
     resp
 }
 
-/// Horizontal slider with a coloured trailing fill and a round handle
-/// (CTkSlider look). `step` snaps the value (e.g. 1.0 for integer sliders).
-#[allow(clippy::too_many_arguments)]
-pub fn color_slider(
-    ui: &mut Ui,
-    value: &mut f32,
-    range: RangeInclusive<f32>,
-    step: Option<f32>,
-    color: Color32,
-    hover: Color32,
-    width: f32,
-) -> Response {
+/// What a [`slider`] edits.
+#[derive(Debug, Clone)]
+pub struct SliderSpec<'a> {
+    pub name: &'a str,
+    pub range: RangeInclusive<f32>,
+    /// The fill is drawn from here to the value: centre for bipolar values,
+    /// one end for a plain amount.
+    pub origin: f32,
+    /// Value restored by a double click.
+    pub default: f32,
+    pub step: f32,
+}
+
+/// Result of a [`slider`] this frame.
+pub struct SliderResult {
+    pub response: Response,
+    /// The value is being dragged or nudged right now.
+    pub active: bool,
+}
+
+/// Horizontal slider, filled from `spec.origin` to the value. Grey until it
+/// is being moved; double click returns it to `spec.default`.
+pub fn slider(ui: &mut Ui, value: &mut f32, spec: &SliderSpec<'_>, width: f32) -> SliderResult {
     let height = 20.0;
-    let (min, max) = (*range.start(), *range.end());
+    let (min, max) = (*spec.range.start(), *spec.range.end());
     let (rect, mut resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
     let r = 8.0;
     let left = rect.left() + r;
@@ -135,77 +225,113 @@ pub fn color_slider(
     if let Some(pos) = resp.interact_pointer_pos() {
         if resp.dragged() || resp.is_pointer_button_down_on() {
             let t = ((pos.x - left) / (right - left)).clamp(0.0, 1.0);
-            let mut v = min + t * (max - min);
-            if let Some(s) = step.filter(|s| *s > 0.0) {
-                v = min + ((v - min) / s).round() * s;
-            }
-            let v = v.clamp(min, max);
+            let snapped = min + ((t * (max - min)) / spec.step).round() * spec.step;
+            let v = snapped.clamp(min, max);
             if v != *value {
                 *value = v;
                 resp.mark_changed();
             }
         }
     }
-    // Keyboard nudging when focused (accessibility nicety).
+    let mut nudged = false;
     if resp.has_focus() {
-        let s = step.unwrap_or((max - min) / 100.0);
         let delta = ui.input(|i| {
             let mut d = 0.0;
             if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowDown) {
-                d -= s;
+                d -= spec.step;
             }
             if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::ArrowUp) {
-                d += s;
+                d += spec.step;
             }
             d
         });
         if delta != 0.0 {
             *value = (*value + delta).clamp(min, max);
             resp.mark_changed();
+            nudged = true;
         }
     }
+    if resp.double_clicked() && *value != spec.default {
+        *value = spec.default;
+        resp.mark_changed();
+    }
+    let active = resp.is_pointer_button_down_on() || resp.dragged() || nudged;
 
     if ui.is_rect_visible(rect) {
-        let t = if max > min {
-            ((*value - min) / (max - min)).clamp(0.0, 1.0)
-        } else {
-            0.0
+        let x_of = |v: f32| {
+            let t = if max > min {
+                ((v - min) / (max - min)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            left + t * (right - left)
         };
-        let x = left + t * (right - left);
+        let (x, origin) = (x_of(*value), x_of(spec.origin));
         let cy = rect.center().y;
         let p = ui.painter();
-        let rail = Rect::from_min_max(pos2(left, cy - 2.0), pos2(right, cy + 2.0));
-        p.rect_filled(rail, 2.0, RAIL);
         p.rect_filled(
-            Rect::from_min_max(rail.min, pos2(x, rail.max.y)),
+            Rect::from_min_max(pos2(left, cy - 2.0), pos2(right, cy + 2.0)),
             2.0,
-            color,
+            RAIL,
         );
-        let active = resp.hovered() || resp.dragged();
-        p.circle_filled(pos2(x, cy), r, if active { hover } else { color });
+        if origin > left + 0.5 && origin < right - 0.5 {
+            // Centre mark of a bipolar value.
+            p.rect_filled(
+                Rect::from_center_size(pos2(origin, cy), vec2(2.0, 10.0)),
+                1.0,
+                FILL_IDLE,
+            );
+        }
+        let (color, handle) = if active {
+            (ACCENT, ACCENT_HOVER)
+        } else if resp.hovered() {
+            (FILL_IDLE, TEXT)
+        } else {
+            (FILL_IDLE, TEXT_DIM)
+        };
+        let (a, b) = (origin.min(x), origin.max(x));
+        if b - a > 0.5 {
+            p.rect_filled(
+                Rect::from_min_max(pos2(a, cy - 2.0), pos2(b, cy + 2.0)),
+                2.0,
+                color,
+            );
+        }
+        p.circle_filled(pos2(x, cy), r, handle);
     }
-    pointer_cursor(ui, &resp);
-    resp
+    let enabled = ui.is_enabled();
+    let shown = f64::from(*value);
+    resp.widget_info(|| WidgetInfo::slider(enabled, shown, spec.name));
+    if resp.hovered() && ui.is_enabled() {
+        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+    }
+    SliderResult {
+        response: resp,
+        active,
+    }
 }
 
-/// Thin flat progress bar (4 px, gold).
+/// Thin progress bar. Neutral: the accent stays on the button that started it.
 pub fn thin_progress(ui: &mut Ui, fraction: f32, height: f32) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, RAIL);
+    p.rect_filled(rect, height / 2.0, RAIL);
     let f = fraction.clamp(0.0, 1.0);
     if f > 0.0 {
         let mut fill = rect;
         fill.max.x = rect.left() + rect.width() * f;
-        p.rect_filled(fill, 0.0, ACCENT);
+        p.rect_filled(fill, height / 2.0, TEXT);
     }
 }
 
-/// Gold header text (Python `FONT_HEADER` + `COLOR_ACCENT`); dimmed when the `Ui` is disabled.
-pub fn header(ui: &mut Ui, text: &str) -> Response {
-    let color = if ui.is_enabled() { ACCENT } else { TEXT_DIM };
-    ui.label(RichText::new(text).font(theme::font_header()).color(color))
+/// Small grey section title.
+pub fn section_title(ui: &mut Ui, text: &str) -> Response {
+    ui.label(
+        RichText::new(text)
+            .font(theme::font_small_bold())
+            .color(TEXT_DIM),
+    )
 }
 
 /// Dim body label.
@@ -213,12 +339,70 @@ pub fn dim_label(ui: &mut Ui, text: &str) -> Response {
     ui.label(RichText::new(text).font(theme::font_body()).color(TEXT_DIM))
 }
 
-/// Normal value label.
-pub fn value_label(ui: &mut Ui, text: &str) -> Response {
-    ui.label(RichText::new(text).font(theme::font_body()).color(TEXT))
+/// Small note, wrapped to the available width.
+pub fn note(ui: &mut Ui, text: &str) {
+    ui.label(
+        RichText::new(text)
+            .font(theme::font_small())
+            .color(TEXT_DIM),
+    );
 }
 
-/// Column widths of the Python three-column grid (label | control | value).
+/// Value beside a slider; butter while that slider is being moved.
+pub fn value_label(ui: &mut Ui, text: &str, active: bool) -> Response {
+    let color = if active { ACCENT } else { TEXT };
+    ui.label(RichText::new(text).font(theme::font_body()).color(color))
+}
+
+/// One style in the style picker: picture on top, name below.
+pub fn style_tile(
+    ui: &mut Ui,
+    texture: TextureId,
+    uv: Rect,
+    name: &str,
+    selected: bool,
+    size: Vec2,
+) -> Response {
+    let name_h = 16.0;
+    let (rect, resp) = ui.allocate_exact_size(size + vec2(0.0, name_h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let img = Rect::from_min_size(rect.min, size);
+        egui::Image::from_texture((texture, size))
+            .uv(uv)
+            .corner_radius(CornerRadius::same(RADIUS_SMALL + 2))
+            .paint_at(ui, img);
+        if selected {
+            p.rect_stroke(
+                img,
+                RADIUS_SMALL + 2,
+                Stroke::new(2.0, ACCENT),
+                StrokeKind::Inside,
+            );
+        } else if resp.hovered() && ui.is_enabled() {
+            p.rect_stroke(
+                img,
+                RADIUS_SMALL + 2,
+                Stroke::new(1.0, TEXT_DIM),
+                StrokeKind::Inside,
+            );
+        }
+        let color = if selected { ACCENT } else { TEXT_DIM };
+        p.text(
+            pos2(rect.center().x, img.bottom() + name_h / 2.0 + 1.0),
+            Align2::CENTER_CENTER,
+            name,
+            theme::font_small(),
+            color,
+        );
+    }
+    let enabled = ui.is_enabled();
+    resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, enabled, selected, name));
+    pointer_cursor(ui, &resp);
+    resp
+}
+
+/// Column widths of a settings grid (label | control | value).
 #[derive(Debug, Clone, Copy)]
 pub struct Columns {
     pub label: f32,
@@ -228,14 +412,14 @@ pub struct Columns {
 
 impl Columns {
     pub const SETTINGS: Columns = Columns {
-        label: 170.0,
-        value: 64.0,
-        row_height: 24.0,
+        label: 96.0,
+        value: 50.0,
+        row_height: 26.0,
     };
 
     /// One grid row: `label` cell, an expanding control cell (receives its
     /// width and returns a value), and a `value` cell that receives the
-    /// control's result (e.g. the slider value to print). Cells are vertically centred.
+    /// control's result. Cells are vertically centred.
     pub fn row<R>(
         &self,
         ui: &mut Ui,
@@ -249,10 +433,24 @@ impl Columns {
             cell(ui, self.label, h, Align::Min, label);
             let ctrl_w = (ui.available_width() - self.value - spacing).max(60.0);
             let r = cell(ui, ctrl_w, h, Align::Min, |ui| control(ui, ctrl_w));
-            cell(ui, self.value, h, Align::Center, |ui| value(ui, &r));
+            cell(ui, self.value, h, Align::Max, |ui| value(ui, &r));
             r
         })
         .inner
+    }
+
+    /// Row whose control spans the control and value columns.
+    pub fn wide_row(
+        &self,
+        ui: &mut Ui,
+        label: impl FnOnce(&mut Ui),
+        control: impl FnOnce(&mut Ui, f32),
+    ) {
+        ui.horizontal(|ui| {
+            cell(ui, self.label, self.row_height, Align::Min, label);
+            let w = (ui.available_width() - 4.0).max(80.0);
+            cell(ui, w, self.row_height, Align::Min, |ui| control(ui, w));
+        });
     }
 }
 
@@ -277,21 +475,16 @@ pub fn cell<R>(
     .inner
 }
 
-/// Text field with the Python entry look (dark background, square border).
+/// Rounded text field on the dark background.
 pub fn text_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Response {
     let mut edit = egui::TextEdit::singleline(text)
         .desired_width(width)
         .font(theme::font_body())
         .text_color(TEXT)
         .background_color(theme::BG)
-        .margin(egui::Margin::symmetric(6, 5));
+        .margin(egui::Margin::symmetric(8, 6));
     if !hint.is_empty() {
-        edit = edit.hint_text(RichText::new(hint.to_owned()).color(Color32::from_gray(0x70)));
+        edit = edit.hint_text(RichText::new(hint.to_owned()).color(TEXT_DIM));
     }
-    ui.scope(|ui| {
-        let w = &mut ui.visuals_mut().widgets;
-        w.inactive.bg_stroke = Stroke::new(1.0, BORDER);
-        ui.add(edit)
-    })
-    .inner
+    ui.add(edit)
 }
