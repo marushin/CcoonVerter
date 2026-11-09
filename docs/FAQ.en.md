@@ -10,9 +10,15 @@ A warning does not mean the file is dangerous, but it does not prove it is safe 
 
 ## Does it ever change my RAW files?
 
-No. RAW files are only ever opened for reading. The only files the app writes are the converted photos, settings, presets, a log and the update check record. Converted files always end in `.jpg`, `.png`, `.tif` or `.webp`, so no file name template or "Overwrite" setting can replace an `.ARW`, `.CR3`, `.NEF` or other RAW file.
+No. RAW files are only ever opened for reading. The only files the app writes are the converted photos, the `.xmp` files that hold star ratings, settings, presets, a log and the update check record. Converted files always end in `.jpg`, `.png`, `.tif` or `.webp`, so no file name template or "Overwrite" setting can replace an `.ARW`, `.CR3`, `.NEF` or other RAW file.
 
 "Overwrite" does replace **a previous conversion result**, so be careful if you edited files in the output folder by hand.
+
+## Why did `.xmp` files appear next to my RAW files?
+
+When you star a photo, the rating is saved in `name.xmp` beside the RAW. That keeps the RAW itself untouched, and Adobe Bridge and Lightroom read these files the same way. No file is created until a photo actually has a rating.
+
+If an `.xmp` from Bridge or Lightroom is already there, only the rating (`xmp:Rating`) is changed; develop settings and everything else stay as they are. A file that cannot be read safely is left alone and reported. Two RAWs with one name (`A.CR2` and `A.NEF`) share one `.xmp`, as in Adobe's convention. Deleting the `.xmp` removes only the rating, not the photo.
 
 ## My camera is reported as unsupported
 

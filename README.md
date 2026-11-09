@@ -30,6 +30,8 @@
 ## 주요 기능
 
 - **변환 전에 결과 보기**: 슬라이더를 움직이면 미리보기가 바로 바뀌고, 저장되는 결과와 같은 계산을 거칩니다. 100% 확대(실제 픽셀), 카메라 JPEG과 좌우 분할 비교, 히스토그램을 제공합니다.
+- **폴더 훑어보기**: 미리보기 옆 썸네일 패널에서 파일을 눌러 바로 보고 화살표 키로 옮겨 다닙니다. 썸네일 크기와 패널 너비를 조절할 수 있고, 썸네일은 카메라 JPEG으로 만듭니다.
+- **별점과 필터**: 마음에 드는 사진에 별을 주고(Bridge·Lightroom이 읽는 `.xmp` 사이드카에 저장, RAW는 그대로) 필터로 모아 봅니다. 필터가 켜지면 표시된 사진만 변환하며 실행 줄에 그 개수가 표시됩니다.
 - **두 가지 방식**: RAW를 직접 현상하거나, 카메라가 RAW 안에 넣어 둔 JPEG을 재압축 없이 그대로 꺼냅니다.
 - **현상**: 필름풍 기본 톤 커브(끄기 가능), 노출 -3~+3 EV, 카메라 JPEG 밝기에 맞춘 자동 노출, 클리핑된 하이라이트 색 깨짐 방지, 약한 출력 샤프닝.
 - **스타일과 톤**: 지금 사진으로 그린 썸네일에서 고르는 12가지 픽처 스타일, 화이트 밸런스(카메라 / 자동), RGB 균형, 블랙/화이트 포인트.
@@ -158,6 +160,8 @@ v0.8.7 이하는 Python(CustomTkinter + rawpy) 앱이었습니다. 예전 실행
 ### Features
 
 - **See the result before converting**: the preview updates as you move a slider and goes through the same processing as the saved file. 100 % view with real pixels, side-by-side split against the camera JPEG, histogram.
+- **Browse the folder**: click a thumbnail in the panel beside the preview, or move with the arrow keys. Thumbnail size and panel width are adjustable, and thumbnails come from the camera JPEG.
+- **Stars and a filter**: give photos you like some stars (saved in an `.xmp` sidecar that Bridge and Lightroom read; the RAW stays as it is) and gather them with the filter. With the filter on, only the photos shown are converted, and the run bar says how many.
 - **Two modes**: develop the RAW, or take out the JPEG the camera saved inside it without compressing it again.
 - **Development**: default film-like tone curve (can be turned off), exposure from -3 to +3 EV, automatic exposure anchored on the camera JPEG, clean clipped highlights, light output sharpening.
 - **Styles and tone**: 12 picture styles chosen from thumbnails of your own photo, white balance (camera or auto), RGB balance, black and white points.

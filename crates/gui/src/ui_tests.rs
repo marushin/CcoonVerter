@@ -60,6 +60,14 @@ fn harness(dir: &Path, size: Vec2, settings: AppSettings, ppp: f32) -> H {
     h
 }
 
+/// Offscreen wgpu renders from several tests at once crash the test process
+/// on exit (seen with DirectX 12; the shipped build uses OpenGL), so one at a time.
+fn render(h: &mut H) -> image::RgbaImage {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    h.render().expect("offscreen render")
+}
+
 fn app(h: &H) -> &CcooNverterApp {
     h.state().as_ref().unwrap()
 }
@@ -566,7 +574,7 @@ fn hundred_percent_view_shows_real_pixels_on_physical_pixels() {
             image,
         );
         h.run_steps(4);
-        let shot = h.render().expect("offscreen render");
+        let shot = render(&mut h);
         // Sample a row through the middle of the photo area.
         let y = (shot.height() as f32 * 0.55) as u32;
         let start = (shot.width() as f32 * 0.55) as u32;
@@ -592,7 +600,7 @@ fn rendered_photo_area_is_neutral_and_the_chrome_is_warm() {
     i18n::set_language(Lang::English);
     let dir = tempfile::tempdir().unwrap();
     let mut h = harness(dir.path(), vec2(1240.0, 800.0), no_update_check(), 1.0);
-    let shot = h.render().expect("offscreen render");
+    let shot = render(&mut h);
     let pixel = |x: u32, y: u32| shot.get_pixel(x, y).0;
     // A grid over the photo area, away from the text in the middle.
     for y in (100..700).step_by(29) {
@@ -709,6 +717,7 @@ fn labels_fit_their_cells_in_both_languages() {
             (Key::ZoomActual, 62.0, theme::font_body_bold()),
             (Key::Compare, 72.0, theme::font_small_bold()),
             (Key::Histogram, 84.0, theme::font_small_bold()),
+            (Key::ThumbsToggle, 72.0, theme::font_small_bold()),
             (Key::ResultOpenFolder, 120.0, theme::font_body_bold()),
             (Key::Close, 90.0, theme::font_body()),
             (Key::Download, 120.0, theme::font_body_bold()),
@@ -766,12 +775,17 @@ fn issue_rows_hold_the_longest_reason_in_two_lines() {
 
 /// Load the real samples into a window and wait for the first developed frame.
 fn loaded(home: &Path, size: Vec2, ppp: f32) -> H {
+    loaded_folder(home, &samples_dir(), size, ppp)
+}
+
+/// `folder` loaded into a window, with its first preview developed.
+fn loaded_folder(home: &Path, folder: &Path, size: Vec2, ppp: f32) -> H {
     let mut h = harness(
         home,
         size,
         AppSettings {
             preview_open: true,
-            ..with_source(no_update_check(), &samples_dir())
+            ..with_source(no_update_check(), folder)
         },
         ppp,
     );
@@ -1063,6 +1077,820 @@ fn zero_typed_in_the_long_edge_field_reads_as_original_size() {
     assert_eq!(app(&h).settings.to_convert().resize, 0);
 }
 
+// ----------------------------------------------------------------------------
+// Thumbnail panel
+// ----------------------------------------------------------------------------
+
+/// A list of files that need not exist, in a window with the preview open.
+fn with_list(size: Vec2, n: usize) -> H {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let settings = AppSettings {
+        preview_open: true,
+        ..no_update_check()
+    };
+    let mut h = harness(&dir, size, settings, 1.0);
+    let files = (0..n).map(|i| PathBuf::from(format!("D:/fake/f{i:05}.CR2")));
+    app_mut(&mut h).preview.set_file_list(files.collect());
+    settle_steps(&mut h);
+    wait(&mut h, "the ratings", |a| a.preview.marks_loaded());
+    h
+}
+
+fn name(i: usize) -> String {
+    format!("f{i:05}.CR2")
+}
+
+fn dng(dir: &Path, name: &str, preview: bool) {
+    let mut spec = DngSpec {
+        width: 320,
+        height: 240,
+        ..Default::default()
+    };
+    if !preview {
+        spec.preview = None;
+    }
+    std::fs::write(dir.join(name), synthetic_dng(&spec)).unwrap();
+}
+
+/// A window that loaded `src` and has answers for what it shows.
+fn loaded_thumbs(home: &Path, src: &Path, size: Vec2) -> H {
+    let mut h = harness(
+        home,
+        size,
+        with_source(
+            AppSettings {
+                preview_open: true,
+                ..no_update_check()
+            },
+            src,
+        ),
+        1.0,
+    );
+    wait(&mut h, "the scan", |a| a.preview.file_count() > 0);
+    wait(&mut h, "the thumbnails", |a| {
+        a.preview.browser().wanted().is_empty() && a.preview.browser().cached() > 0
+    });
+    h
+}
+
+fn select_rect(h: &H) -> Rect {
+    app(h).preview.image_rect()
+}
+
+#[test]
+fn the_panel_needs_three_columns_and_a_strip_takes_over_below() {
+    i18n::set_language(Lang::English);
+    let at = |size: Vec2| {
+        let h = with_list(size, 30);
+        app(&h).preview.browser().columns()
+    };
+    assert_eq!(at(vec2(1240.0, 800.0)), Some(2), "two columns by default");
+    assert_eq!(at(vec2(999.0, 800.0)), None, "strip at 999");
+    assert!(at(vec2(1000.0, 800.0)).is_some(), "panel at 1000");
+    assert_eq!(at(vec2(600.0, 820.0)), None);
+    assert_eq!(at(vec2(520.0, 700.0)), None);
+}
+
+#[test]
+fn run_bar_and_layout_hold_with_thumbnails_at_every_size_in_both_languages() {
+    for lang in [Lang::English, Lang::Korean] {
+        i18n::set_language(lang);
+        for (w, h_) in SIZES {
+            let mut h = with_list(vec2(w, h_), 40);
+            let window = Rect::from_min_size(Pos2::ZERO, vec2(w, h_));
+            let button = h.get_by_label(t(Key::StartButton)).rect();
+            assert!(window.contains_rect(button), "{lang:?} {w}x{h_}");
+            assert!(button.bottom() <= h_ - 2.0, "{lang:?} {w}x{h_}");
+            let photo = select_rect(&h);
+            assert!(window.contains_rect(photo), "{lang:?} {w}x{h_}: {photo:?}");
+            assert!(photo.bottom() <= button.top(), "{lang:?} {w}x{h_}");
+            // The first cell is on screen, whichever arrangement is used.
+            let cell = h.get_by_label(&name(0)).rect();
+            assert!(window.intersects(cell), "{lang:?} {w}x{h_}");
+            if w >= 1000.0 {
+                assert!(
+                    photo.width() >= MIN_PREVIEW_WIDTH - PAD_MEDIUM * 2.0 - 1.0,
+                    "{lang:?} {w}x{h_}: photo {}",
+                    photo.width()
+                );
+                assert!(cell.left() > photo.right(), "panel right of the photo");
+            }
+            let panel = app(&h).preview.browser().columns().is_some();
+            assert_eq!(panel, w >= 1000.0, "{lang:?} {w}x{h_}");
+            app_mut(&mut h).progress = ProgressView::starting(3);
+            settle_steps(&mut h);
+            let button = h.get_by_label(t(Key::StartButton)).rect();
+            assert!(window.contains_rect(button), "{lang:?} {w}x{h_}");
+        }
+    }
+    i18n::set_language(Lang::English);
+}
+
+#[test]
+fn at_the_default_size_the_photo_is_clearly_the_largest_thing() {
+    i18n::set_language(Lang::English);
+    let h = with_list(vec2(1240.0, 800.0), 30);
+    let photo = select_rect(&h);
+    let panel_w = app(&h).thumb_panel_width;
+    assert!(
+        photo.width() > panel_w * 2.0,
+        "photo {} panel {panel_w}",
+        photo.width()
+    );
+    assert!(photo.width() > ADJUSTMENTS_WIDTH + 200.0);
+}
+
+#[test]
+fn clicking_a_thumbnail_shows_that_file() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 30);
+    assert_eq!(app(&h).preview.current_index(), 0);
+    h.get_by_label(&name(3)).click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.current_index(), 3);
+    let f = app(&h).preview.current_file().unwrap().clone();
+    assert!(f.to_string_lossy().ends_with(&name(3)));
+}
+
+#[test]
+fn buttons_and_arrow_keys_move_the_marker_and_scroll_it_into_view() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 60);
+    let window = Rect::from_min_size(Pos2::ZERO, vec2(1240.0, 800.0));
+    for _ in 0..26 {
+        h.get_by_label(">").click();
+        settle_steps(&mut h);
+    }
+    let i = app(&h).preview.current_index();
+    assert_eq!(i, 26);
+    assert!(app(&h).preview.browser().visible().contains(&i));
+    let cell = h.get_by_label(&name(i)).rect();
+    assert!(window.contains_rect(cell), "{cell:?}");
+
+    h.key_press(egui::Key::ArrowLeft);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.current_index(), 25);
+    h.key_press(egui::Key::ArrowRight);
+    h.key_press(egui::Key::ArrowRight);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.current_index(), 27);
+
+    // Up and Down move by a row: two columns here.
+    h.key_press(egui::Key::ArrowDown);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.current_index(), 29);
+    h.key_press(egui::Key::ArrowUp);
+    h.key_press(egui::Key::ArrowUp);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.current_index(), 25);
+    let cell = h.get_by_label(&name(25)).rect();
+    assert!(window.contains_rect(cell), "{cell:?}");
+}
+
+#[test]
+fn a_far_jump_scrolls_the_strip_too() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(600.0, 820.0), 200);
+    assert_eq!(app(&h).preview.browser().columns(), None);
+    for _ in 0..40 {
+        h.key_press(egui::Key::ArrowRight);
+        h.step();
+    }
+    settle_steps(&mut h);
+    let i = app(&h).preview.current_index();
+    assert_eq!(i, 40);
+    assert!(app(&h).preview.browser().visible().contains(&i));
+    let cell = h.get_by_label(&name(i)).rect();
+    assert!(
+        cell.right() <= 600.0 && cell.left() >= 0.0,
+        "{cell:?} not on screen"
+    );
+}
+
+#[test]
+fn arrow_keys_leave_a_focused_text_field_alone() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 30);
+    let field = h.get_all_by_role(Role::TextInput).next().unwrap();
+    field.focus();
+    h.run_steps(3);
+    h.key_press(egui::Key::ArrowRight);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.current_index(), 0, "text field had focus");
+}
+
+#[test]
+fn the_size_slider_changes_the_number_of_columns() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 30);
+    assert_eq!(app(&h).preview.browser().columns(), Some(2));
+    let rect = h
+        .get_by_role_and_label(Role::Slider, t(Key::ThumbSizeLabel))
+        .rect();
+    click_at(&mut h, rect.left_center() + vec2(9.0, 0.0));
+    settle_steps(&mut h);
+    let small = app(&h).preview.thumb_size;
+    assert!(small <= 68.0, "{small}");
+    let cols_small = app(&h).preview.browser().columns().unwrap();
+    assert!(cols_small >= 3, "{cols_small}");
+    click_at(&mut h, rect.right_center() - vec2(9.0, 0.0));
+    settle_steps(&mut h);
+    let cols_big = app(&h).preview.browser().columns().unwrap();
+    assert_eq!(cols_big, 1, "at the largest size one column fits");
+}
+
+#[test]
+fn dragging_the_panel_edge_respects_its_limits() {
+    i18n::set_language(Lang::English);
+    let (w, h_) = (1240.0, 800.0);
+    let mut h = with_list(vec2(w, h_), 30);
+    let drag = |h: &mut H, to: f32| {
+        let edge = w - app(h).thumb_panel_width;
+        let start = Pos2::new(edge, 400.0);
+        h.hover_at(start);
+        h.step();
+        h.drag_at(start);
+        h.step();
+        h.hover_at(Pos2::new(to, 400.0));
+        h.step();
+        h.drop_at(Pos2::new(to, 400.0));
+        h.run_steps(4);
+    };
+    // Left as far as it goes: the preview keeps its minimum width.
+    drag(&mut h, 0.0);
+    let widest = app(&h).thumb_panel_width;
+    assert!(
+        (widest - (w - ADJUSTMENTS_WIDTH - MIN_PREVIEW_WIDTH)).abs() <= 1.0,
+        "widest {widest}"
+    );
+    assert!(select_rect(&h).width() >= MIN_PREVIEW_WIDTH - PAD_MEDIUM * 2.0 - 1.0);
+    // Right as far as it goes: the panel keeps its minimum width.
+    drag(&mut h, w);
+    let narrowest = app(&h).thumb_panel_width;
+    assert!(
+        (narrowest - PANEL_MIN_WIDTH).abs() <= 1.0,
+        "narrowest {narrowest}"
+    );
+    assert_ne!(widest, narrowest);
+}
+
+#[test]
+fn the_toggle_hides_and_shows_the_panel_and_settings_remember_it() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 30);
+    let photo_with_panel = select_rect(&h).width();
+    assert!(h.query_by_label(&name(0)).is_some());
+    h.get_by_label(t(Key::ThumbsToggle)).click();
+    settle_steps(&mut h);
+    assert!(!app(&h).preview.thumbs_open);
+    assert!(h.query_by_label(&name(0)).is_none(), "panel hidden");
+    assert!(select_rect(&h).width() > photo_with_panel, "photo grows");
+    assert_eq!(app(&h).preview.browser().columns(), None);
+    let saved = app(&h).app_settings();
+    assert!(!saved.thumbs_open);
+    let shown = app(&h).thumb_panel_width;
+    assert_eq!(saved.thumb_panel_width, shown);
+    h.get_by_label(t(Key::ThumbsToggle)).click();
+    settle_steps(&mut h);
+    assert!(h.query_by_label(&name(0)).is_some());
+}
+
+#[test]
+fn settings_restore_the_panel_width_size_and_visibility() {
+    i18n::set_language(Lang::English);
+    let dir = tempfile::tempdir().unwrap();
+    let settings = AppSettings {
+        thumb_panel_width: 300.0,
+        thumb_size: 72.0,
+        thumbs_open: false,
+        ..no_update_check()
+    };
+    let mut h = harness(dir.path(), vec2(1240.0, 800.0), settings, 1.0);
+    let files = (0..10).map(|i| PathBuf::from(format!("D:/fake/{i}.CR2")));
+    app_mut(&mut h).preview.set_file_list(files.collect());
+    settle_steps(&mut h);
+    assert!(!app(&h).preview.thumbs_open);
+    assert_eq!(app(&h).preview.thumb_size, 72.0);
+    app_mut(&mut h).preview.thumbs_open = true;
+    settle_steps(&mut h);
+    assert!((app(&h).thumb_panel_width - 300.0).abs() <= 1.0);
+}
+
+#[test]
+fn the_panel_and_strip_vanish_with_the_preview_and_while_a_result_is_shown() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(600.0, 820.0), 20);
+    assert!(h.query_by_label(&name(0)).is_some(), "strip shown");
+    h.get_by_label(t(Key::HidePreview)).click();
+    settle_steps(&mut h);
+    assert!(
+        h.query_by_label(&name(0)).is_none(),
+        "gone with the preview"
+    );
+
+    let mut h = with_list(vec2(1240.0, 800.0), 20);
+    let a = app_mut(&mut h);
+    a.report = Some(BatchReport::new(
+        &outcome_with_failures(),
+        Path::new("D:/out"),
+        &a.paths.log_file(),
+    ));
+    settle_steps(&mut h);
+    assert!(h.query_by_label(&name(0)).is_none(), "gone with the photo");
+}
+
+#[test]
+fn the_panel_is_neutral_and_only_the_current_outline_is_butter() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 8);
+    let tile = h.get_by_label(&name(1)).rect();
+    let current = h.get_by_label(&name(0)).rect();
+    let shot = render(&mut h);
+    let at = |p: Pos2| shot.get_pixel(p.x as u32, p.y as u32).0;
+    // Tile and panel are grey, and the tile is the lighter of the two.
+    let [r, g, b, _] = at(tile.left_top() + vec2(20.0, 20.0));
+    assert!(r == g && g == b, "tile {r} {g} {b}");
+    let [pr, pg, pb, _] = at(Pos2::new(tile.right() + 4.0, tile.top() + 20.0));
+    assert!(pr == pg && pg == pb, "panel {pr} {pg} {pb}");
+    assert!(r > pr, "tile is lighter than the panel");
+    // Butter around the current tile, nowhere around the others.
+    let butter = |p: [u8; 4]| p[0] > 240 && p[1] > 190 && p[2] < 110;
+    let current_edge = at(Pos2::new(current.center().x, current.top() + 1.0));
+    assert!(butter(current_edge), "{current_edge:?}");
+    let other_edge = at(Pos2::new(tile.center().x, tile.top() + 1.0));
+    assert!(!butter(other_edge), "{other_edge:?}");
+}
+
+#[test]
+fn the_status_row_counts_the_files() {
+    for lang in [Lang::English, Lang::Korean] {
+        i18n::set_language(lang);
+        let h = with_list(vec2(1240.0, 800.0), 38);
+        h.get_by_label(&tf(Key::ThumbsCount, &[&38]));
+    }
+    i18n::set_language(Lang::English);
+}
+
+/// Real worker, synthetic files: the camera JPEG appears, and a file without
+/// one gets a placeholder, then its developed picture once it has been shown.
+#[test]
+fn a_file_without_a_camera_jpeg_shows_a_placeholder_until_it_is_developed() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    dng(src.path(), "a.DNG", true);
+    dng(src.path(), "b.DNG", false);
+    dng(src.path(), "c.DNG", true);
+    let mut h = loaded_thumbs(home.path(), src.path(), vec2(1240.0, 800.0));
+    use crate::thumbs::ThumbState::{Camera, Developed, Placeholder};
+    assert_eq!(app(&h).preview.browser().state(0), Camera);
+    assert_eq!(app(&h).preview.browser().state(1), Placeholder);
+    assert_eq!(app(&h).preview.browser().state(2), Camera);
+
+    h.get_by_label("b.DNG").click();
+    h.run_steps(3);
+    wait(&mut h, "the development", |a| a.preview.has_developed());
+    assert_eq!(app(&h).preview.browser().state(1), Developed);
+}
+
+#[test]
+fn a_damaged_file_gets_a_placeholder_and_the_app_keeps_running() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    dng(src.path(), "a.DNG", true);
+    // Zero-size box in a CR3 and a garbage ARW.
+    let mut cr3 = vec![0u8, 0, 0, 24];
+    cr3.extend_from_slice(b"ftypcrx ");
+    cr3.resize(24, 0);
+    cr3.extend_from_slice(&[0, 0, 0, 16]);
+    cr3.extend_from_slice(b"moov");
+    cr3.extend_from_slice(&[0, 0, 0, 0]);
+    cr3.extend_from_slice(b"trak");
+    std::fs::write(src.path().join("b.CR3"), cr3).unwrap();
+    std::fs::write(src.path().join("c.ARW"), [0xFFu8; 4096]).unwrap();
+    let mut h = loaded_thumbs(home.path(), src.path(), vec2(1240.0, 800.0));
+    use crate::thumbs::ThumbState::Placeholder;
+    assert_eq!(app(&h).preview.browser().state(1), Placeholder);
+    assert_eq!(app(&h).preview.browser().state(2), Placeholder);
+    // Still responsive, and clicking one fails only for that file.
+    h.get_by_label("c.ARW").click();
+    h.run_steps(5);
+    assert_eq!(app(&h).preview.current_index(), 2);
+}
+
+/// Regression guard for the class of bug fixed for scans in v1.0.0: nothing
+/// from the previous folder may show up in the new list.
+#[test]
+fn results_for_an_old_folder_are_discarded_after_the_folder_changes() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 10);
+    let old = app(&h).preview.browser().generation();
+    let files = (0..10).map(|i| PathBuf::from(format!("D:/other/{i}.NEF")));
+    app_mut(&mut h).preview.set_file_list(files.collect());
+    settle_steps(&mut h);
+    let ctx = h.ctx.clone();
+    app_mut(&mut h).preview.browser_mut().accept_for_test(
+        &ctx,
+        crate::thumbs::ThumbResult {
+            generation: old,
+            index: 0,
+            image: Some(egui::ColorImage::from_rgb([1, 1], &[1, 2, 3])),
+        },
+    );
+    settle_steps(&mut h);
+    assert_eq!(
+        app(&h).preview.browser().state(0),
+        crate::thumbs::ThumbState::Waiting
+    );
+    assert_eq!(app(&h).preview.browser().cached(), 0);
+}
+
+fn star_label(file: &str, k: u8) -> String {
+    tf(Key::StarButton, &[&file, &k])
+}
+
+#[test]
+fn clicking_stars_sets_and_clears_them() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 12);
+    let labelled = star_label(&name(4), 4);
+    assert_eq!(h.get_all_by_label(&labelled).count(), 1);
+    h.get_by_label(&labelled).click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.stars_of(4), 4);
+    h.get_by_label(&labelled).click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.stars_of(4), 0, "same star clears");
+    // Under the photo, for the current file (also under its tile).
+    h.get_all_by_label(&star_label(&name(0), 3))
+        .next()
+        .unwrap()
+        .click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.stars_of(0), 3);
+}
+
+#[test]
+fn number_keys_set_stars_only_when_no_text_field_has_focus() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 12);
+    h.key_press(egui::Key::Num2);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.stars_of(0), 2);
+    h.key_press(egui::Key::Num5);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.stars_of(0), 5);
+    h.key_press(egui::Key::Num0);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.stars_of(0), 0);
+
+    let field = h.get_all_by_role(Role::TextInput).next().unwrap();
+    field.focus();
+    h.run_steps(3);
+    h.key_press(egui::Key::Num3);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.stars_of(0), 0, "the text field had focus");
+}
+
+#[test]
+fn the_filter_narrows_the_grid_navigation_and_the_count() {
+    use crate::preview_panel::Filter;
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 12);
+    for (i, stars) in [(1usize, 2u8), (5, 4), (9, 5)] {
+        app_mut(&mut h).preview.set_stars(i, stars);
+    }
+    settle_steps(&mut h);
+    app_mut(&mut h).preview.set_filter(Filter::Rated(4));
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.shown_count(), 2);
+    assert!(h.query_by_label(&name(1)).is_none(), "filtered out");
+    assert!(h.query_by_label(&name(5)).is_some());
+    h.get_by_label("2 / 12");
+    // The current file was filtered out: the nearest one is shown.
+    assert_eq!(app(&h).preview.current_index(), 5);
+    h.get_by_label(">").click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.current_index(), 9);
+    h.get_by_label(">").click();
+    settle_steps(&mut h);
+    assert_eq!(
+        app(&h).preview.current_index(),
+        5,
+        "wraps inside the filter"
+    );
+    h.key_press(egui::Key::ArrowLeft);
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.current_index(), 9);
+
+    // Setting the filter from the header row.
+    h.get_by_role_and_label(Role::RadioButton, t(Key::FilterAll))
+        .click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.shown_count(), 12);
+    h.get_by_role_and_label(Role::RadioButton, t(Key::FilterRated))
+        .click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.shown_count(), 3, "Rated starts at one star");
+    h.get_by_label(&star_label(t(Key::MinStarsLabel), 5))
+        .click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.shown_count(), 1);
+}
+
+#[test]
+fn an_empty_filter_explains_itself_and_disables_the_batch() {
+    use crate::preview_panel::Filter;
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 6);
+    wait(&mut h, "the ratings", |a| a.preview.marks_loaded());
+    app_mut(&mut h).preview.set_filter(Filter::Rated(5));
+    settle_steps(&mut h);
+    h.get_by_label(t(Key::FilterEmpty));
+    let zero = tf(Key::StartFiltered, &[&0]);
+    let button = h.get_by_label(&zero);
+    assert!(button.accesskit_node().is_disabled());
+    assert_eq!(app(&h).preview.current_index(), 0);
+    h.get_all_by_label(t(Key::FilterClear))
+        .next()
+        .unwrap()
+        .click();
+    settle_steps(&mut h);
+    assert_eq!(app(&h).preview.shown_count(), 6);
+    h.get_by_label(t(Key::StartButton));
+}
+
+#[test]
+fn the_run_bar_says_what_a_filter_will_convert() {
+    use crate::preview_panel::Filter;
+    for lang in [Lang::English, Lang::Korean] {
+        i18n::set_language(lang);
+        for size in [vec2(1240.0, 800.0), vec2(520.0, 700.0)] {
+            let mut h = with_list(size, 38);
+            wait(&mut h, "the ratings", |a| a.preview.marks_loaded());
+            for i in 0..12 {
+                app_mut(&mut h).preview.set_stars(i, 3);
+            }
+            app_mut(&mut h).preview.set_filter(Filter::Rated(1));
+            settle_steps(&mut h);
+            let note = tf(Key::FilterBatchNote, &[&12, &38]);
+            h.get_by_label(&note);
+            let start = tf(Key::StartFiltered, &[&12]);
+            let button = h.get_by_label(&start);
+            let window = Rect::from_min_size(Pos2::ZERO, size);
+            assert!(window.contains_rect(button.rect()), "{lang:?} {size:?}");
+            // Fits its cell rather than being cut off.
+            let ctx = h.ctx.clone();
+            let text_w = text_width(&ctx, &note, theme::font_body_bold());
+            let room = (size.x - 2.0 * PAD_LARGE - (size.x * 0.34).clamp(190.0, 280.0) - PAD_LARGE)
+                - RUN_BAR_CLEAR
+                - 6.0;
+            assert!(text_w <= room, "{lang:?} {size:?}: {text_w} > {room}");
+            app_mut(&mut h).preview.clear_filter();
+            settle_steps(&mut h);
+            h.get_by_label(t(Key::StartButton));
+        }
+    }
+    i18n::set_language(Lang::English);
+}
+
+#[test]
+fn with_a_filter_on_only_the_files_shown_are_converted() {
+    use crate::preview_panel::Filter;
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = synthetic_source(&["a.DNG", "b.DNG", "c.DNG"]);
+    let out = src.path().join("Converted_JPG");
+    let mut h = harness(
+        home.path(),
+        vec2(1240.0, 800.0),
+        with_source(no_update_check(), src.path()),
+        1.0,
+    );
+    wait(&mut h, "the scan", |a| a.preview.file_count() == 3);
+    wait(&mut h, "the ratings", |a| a.preview.marks_loaded());
+    app_mut(&mut h).preview.set_stars(1, 4);
+    app_mut(&mut h).preview.set_filter(Filter::Rated(1));
+    settle_steps(&mut h);
+    h.get_by_label(&tf(Key::FilterBatchNote, &[&1, &3]));
+    h.get_by_label(&tf(Key::StartFiltered, &[&1])).click();
+    settle_steps(&mut h);
+    wait(&mut h, "the batch", |a| a.report.is_some());
+    let report = app(&h).report.as_ref().unwrap();
+    assert_eq!(report.converted, 1);
+    let note = report.filter_note.clone().unwrap();
+    assert_eq!(note, tf(Key::ResultFilterNote, &[&1, &3]));
+    h.get_by_label(&note);
+    assert!(out.join("b.jpg").exists());
+    assert!(!out.join("a.jpg").exists());
+    assert!(!out.join("c.jpg").exists());
+    // The rating went to the sidecar, beside the untouched RAW.
+    assert!(src.path().join("b.xmp").exists());
+}
+
+#[test]
+fn a_mark_that_cannot_be_saved_shows_a_notice_and_stays() {
+    i18n::set_language(Lang::English);
+    let mut h = with_list(vec2(1240.0, 800.0), 6);
+    app_mut(&mut h).preview.set_stars(2, 3);
+    wait(&mut h, "the notice", |a| {
+        a.notice.as_ref().is_some_and(|(n, _)| n.contains(&name(2)))
+    });
+    assert_eq!(app(&h).preview.stars_of(2), 3);
+}
+
+#[test]
+fn stars_already_in_sidecars_are_shown() {
+    i18n::set_language(Lang::English);
+    let home = tempfile::tempdir().unwrap();
+    let src = synthetic_source(&["a.DNG", "b.DNG"]);
+    ccoonverter_core::sidecar::save_stars(&src.path().join("b.DNG"), 4).unwrap();
+    let mut h = harness(
+        home.path(),
+        vec2(1240.0, 800.0),
+        with_source(no_update_check(), src.path()),
+        1.0,
+    );
+    wait(&mut h, "the scan", |a| a.preview.file_count() == 2);
+    wait(&mut h, "the ratings", |a| a.preview.marks_loaded());
+    assert_eq!(app(&h).preview.stars_of(0), 0);
+    assert_eq!(app(&h).preview.stars_of(1), 4);
+}
+
+/// 10,000 small files, each with a sidecar: how long the ratings take to read,
+/// and frame time with a filter on. In release:
+/// `cargo test --release -p ccoonverter ratings_on_ten_thousand -- --ignored --nocapture --test-threads=1`
+#[test]
+#[ignore]
+fn ratings_on_ten_thousand_files() {
+    use crate::preview_panel::Filter;
+    i18n::set_language(Lang::English);
+    let dir = tempfile::tempdir().unwrap();
+    let dng = synthetic_dng(&DngSpec {
+        width: 32,
+        height: 24,
+        ..Default::default()
+    });
+    let t0 = Instant::now();
+    for i in 0..10_000 {
+        let raw = dir.path().join(format!("IMG_{i:05}.DNG"));
+        std::fs::write(&raw, &dng).unwrap();
+        if i % 2 == 0 {
+            ccoonverter_core::sidecar::save_stars(&raw, (i % 5) as u8 + 1).unwrap();
+        }
+    }
+    println!(
+        "created 10,000 RAWs and 5,000 sidecars in {:.1} s",
+        t0.elapsed().as_secs_f64()
+    );
+    let home = tempfile::tempdir().unwrap();
+    let mut h = harness(
+        home.path(),
+        vec2(1920.0, 1080.0),
+        with_source(no_update_check(), dir.path()),
+        1.0,
+    );
+    let t1 = Instant::now();
+    wait(&mut h, "the scan", |a| a.preview.file_count() == 10_000);
+    let scanned = t1.elapsed().as_secs_f64();
+    let t2 = Instant::now();
+    wait(&mut h, "the ratings", |a| a.preview.marks_loaded());
+    println!(
+        "scan {scanned:.2} s; all 10,000 ratings read in {:.2} s (preview gate included, first file developing)",
+        t2.elapsed().as_secs_f64()
+    );
+    let frames = |h: &mut H, n: usize| {
+        let mut times = Vec::with_capacity(n);
+        for _ in 0..n {
+            let t = Instant::now();
+            h.step();
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(f64::total_cmp);
+        (times.iter().sum::<f64>() / n as f64, times[n * 95 / 100])
+    };
+    let (no_filter, no_filter_p95) = frames(&mut h, 120);
+    app_mut(&mut h).preview.set_filter(Filter::Rated(3));
+    h.step();
+    let (filtered, filtered_p95) = frames(&mut h, 120);
+    println!(
+        "frame ms: no filter mean {no_filter:.3} p95 {no_filter_p95:.3}; filter on mean {filtered:.3} p95 {filtered_p95:.3}; shown {}",
+        app(&h).preview.shown_count()
+    );
+    assert_eq!(app(&h).preview.shown_count(), 3000);
+}
+
+/// Measurements on a 10,000-entry list. In release:
+/// `cargo test --release -p ccoonverter thumbnail_panel_at_ten_thousand -- --ignored --nocapture --test-threads=1`
+#[test]
+#[ignore]
+fn thumbnail_panel_at_ten_thousand_files() {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    i18n::set_language(Lang::English);
+    let samples = ccoonverter_core::scan::scan_folder(&samples_dir()).unwrap();
+    let list =
+        |n: usize| -> Vec<PathBuf> { (0..n).map(|i| samples[i % samples.len()].clone()).collect() };
+    let mut sys = System::new();
+    let pid = Pid::from_u32(std::process::id());
+    let mut rss_mb = || {
+        sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        sys.process(pid).map_or(0, |p| p.memory()) as f64 / 1_048_576.0
+    };
+    type EachFrame = Box<dyn FnMut(&mut H, usize)>;
+    let frames = |h: &mut H, n: usize, mut each: EachFrame| {
+        let mut times = Vec::with_capacity(n);
+        for i in 0..n {
+            each(h, i);
+            let t = Instant::now();
+            h.step();
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(f64::total_cmp);
+        (times.iter().sum::<f64>() / n as f64, times[n * 95 / 100])
+    };
+    println!(
+        "window,files,arrangement,idle_mean_ms,idle_p95_ms,scrolling_mean_ms,scrolling_p95_ms"
+    );
+    for &(w, h_) in &[(1240.0, 800.0), (600.0, 820.0)] {
+        for n in [100usize, 1_000, 10_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = AppSettings {
+                preview_open: true,
+                ..no_update_check()
+            };
+            let mut h = harness(dir.path(), vec2(w, h_), settings, 1.0);
+            app_mut(&mut h).preview.set_file_list(list(n));
+            settle_steps(&mut h);
+            wait(&mut h, "the first preview", |a| a.preview.has_developed());
+            let (idle, idle95) = frames(&mut h, 120, Box::new(|_, _| {}));
+            let (scroll, scroll95) = frames(
+                &mut h,
+                200,
+                Box::new(move |h: &mut H, i| {
+                    let at = app(h).preview.current_index();
+                    app_mut(h)
+                        .preview
+                        .browser_mut()
+                        .accept_view_jump((at + i * 3) % n);
+                }),
+            );
+            let columns = app(&h).preview.browser().columns();
+            println!(
+                "{w}x{h_},{n},{:?},{idle:.3},{idle95:.3},{scroll:.3},{scroll95:.3}",
+                columns
+            );
+        }
+    }
+
+    // Memory and throughput across a 10,000 list: jump through it for a minute.
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(
+        dir.path(),
+        vec2(1920.0, 1080.0),
+        AppSettings {
+            preview_open: true,
+            ..no_update_check()
+        },
+        1.0,
+    );
+    let start_rss = rss_mb();
+    app_mut(&mut h).preview.set_file_list(list(10_000));
+    h.step();
+    let t0 = Instant::now();
+    wait(&mut h, "the first screen of thumbnails", |a| {
+        a.preview.browser().wanted().is_empty() && a.preview.browser().cached() > 0
+    });
+    let cached_first = app(&h).preview.browser().cached();
+    println!(
+        "first screen: {cached_first} thumbnails in {:.2} s ({:.1}/s through the panel, gated)",
+        t0.elapsed().as_secs_f64(),
+        cached_first as f64 / t0.elapsed().as_secs_f64()
+    );
+    let (mut peak_rss, mut peak_cached) = (0f64, 0usize);
+    let (mut jumps, t1) = (0usize, Instant::now());
+    while t1.elapsed() < Duration::from_secs(60) {
+        jumps += 1;
+        let target = (jumps * 37) % 10_000;
+        app_mut(&mut h)
+            .preview
+            .browser_mut()
+            .accept_view_jump(target);
+        let until = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < until {
+            h.step();
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        peak_cached = peak_cached.max(app(&h).preview.browser().cached());
+        peak_rss = peak_rss.max(rss_mb());
+    }
+    println!(
+        "{jumps} jumps; cache peak {peak_cached} (limit {}); working set start {start_rss:.0} MB, peak {peak_rss:.0} MB",
+        crate::thumbs::CACHE_CAPACITY
+    );
+    assert!(peak_cached <= crate::thumbs::CACHE_CAPACITY);
+}
+
 /// Folder shown in the documentation: the samples live in the repository,
 /// which is no business of a reader.
 fn demo_folder(code: &str) -> &'static str {
@@ -1095,7 +1923,7 @@ fn screenshots() {
         h.set_render_cursor(false);
         h.remove_cursor();
         h.run_steps(4);
-        let image = h.render().expect("offscreen render");
+        let image = render(h);
         image.save(out.join(&name)).unwrap();
         println!("wrote {name}");
     };
@@ -1115,21 +1943,72 @@ fn screenshots() {
         } else {
             "gui_windows.png".to_string()
         };
+        // A realistic folder for the thumbnail panel: the five samples under
+        // neutral camera-style names, repeated (hard links, nothing copied).
+        let shoot = tempfile::tempdir().unwrap();
+        let samples = ccoonverter_core::scan::scan_folder(&samples_dir()).unwrap();
+        for i in 0..24 {
+            let from = &samples[i % samples.len()];
+            let ext = from.extension().unwrap().to_string_lossy().into_owned();
+            let to = shoot.path().join(format!("IMG_{:04}.{ext}", 3101 + i));
+            // Hard links do not cross drives; a copy is fine then.
+            if std::fs::hard_link(from, &to).is_err() {
+                std::fs::copy(from, &to).unwrap();
+            }
+        }
+        let settle_thumbnails = |h: &mut H| {
+            wait(h, "file thumbnails", |a| {
+                a.preview.browser().wanted().is_empty() && a.preview.browser().cached() > 0
+            });
+        };
+        let shoot_window = |size: Vec2| {
+            let mut h = loaded_folder(home.path(), shoot.path(), size, ppp);
+            select_camera_sample(&mut h);
+            wait(&mut h, "thumbnails", |a| a.preview.has_real_thumbnails());
+            settle_thumbnails(&mut h);
+            h
+        };
         let loaded_camera_sample = || {
             let mut h = loaded(home.path(), wide, ppp);
             select_camera_sample(&mut h);
             wait(&mut h, "thumbnails", |a| a.preview.has_real_thumbnails());
+            settle_thumbnails(&mut h);
             h
         };
 
         let mut h = harness(home.path(), wide, no_update_check(), 1.0);
         save(&mut h, format!("empty_{code}.png"));
 
-        let mut h = loaded_camera_sample();
+        let mut h = shoot_window(wide);
+        // A few rated photos, so the stars and the filter can be seen.
+        for (i, stars) in [(0, 5u8), (1, 4), (3, 3), (6, 5), (8, 2), (13, 4)] {
+            app_mut(&mut h).preview.set_stars(i, stars);
+        }
+        wait(&mut h, "the ratings", |a| a.preview.marks_loaded());
+        settle_steps(&mut h);
         show_demo_folder(&mut h, code);
         save(&mut h, main_name);
+        app_mut(&mut h)
+            .preview
+            .set_filter(crate::preview_panel::Filter::Rated(4));
+        h.run_steps(2);
+        settle_thumbnails(&mut h);
+        save(&mut h, format!("thumbs_filter_{code}.png"));
+        app_mut(&mut h)
+            .preview
+            .set_filter(crate::preview_panel::Filter::All);
+        h.run_steps(2);
         app_mut(&mut h).preview.set_compare(true);
         save(&mut h, format!("split_{code}.png"));
+
+        // The panel hidden, and the strip that replaces it in a narrow window.
+        let mut h = shoot_window(wide);
+        show_demo_folder(&mut h, code);
+        app_mut(&mut h).preview.thumbs_open = false;
+        save(&mut h, format!("thumbs_hidden_{code}.png"));
+        let mut h = shoot_window(vec2(900.0, 700.0));
+        show_demo_folder(&mut h, code);
+        save(&mut h, format!("thumbs_strip_{code}.png"));
 
         let mut h = loaded_camera_sample();
         app_mut(&mut h).preview.set_compare(true);
@@ -1162,8 +2041,11 @@ fn screenshots() {
         a.settings.filename_template = "{date}_{name}".into();
         save(&mut h, format!("output_{code}.png"));
 
-        let mut h = loaded(home.path(), narrow, 1.0);
+        let mut h = loaded_folder(home.path(), shoot.path(), narrow, 1.0);
         select_camera_sample(&mut h);
+        wait(&mut h, "file thumbnails", |a| {
+            a.preview.browser().wanted().is_empty() && a.preview.browser().cached() > 0
+        });
         show_demo_folder(&mut h, code);
         save(&mut h, format!("narrow_{code}.png"));
         app_mut(&mut h).settings.extract_embedded = true;

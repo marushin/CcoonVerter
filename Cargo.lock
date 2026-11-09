@@ -725,6 +725,7 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "sys-locale",
+ "sysinfo",
  "tempfile",
  "windows-sys 0.61.2",
  "winit",

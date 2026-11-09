@@ -90,7 +90,10 @@ pub fn reduce_long_edge_f32(img: RgbF32Image, long_edge: u32) -> RgbF32Image {
     if long_edge == 0 || long <= long_edge {
         return img;
     }
-    let k = reduction_factor(long, long_edge);
+    // Never larger than the short side, or the reduced image would be empty.
+    let k = reduction_factor(long, long_edge)
+        .min(img.width())
+        .min(img.height());
     let img = if k > 1 {
         let (w, h, data) = box_reduce(
             img.as_raw(),
@@ -113,7 +116,10 @@ pub fn reduce_long_edge_u8(img: RgbImage, long_edge: u32) -> RgbImage {
     if long_edge == 0 || long <= long_edge {
         return img;
     }
-    let k = reduction_factor(long, long_edge);
+    // Never larger than the short side, or the reduced image would be empty.
+    let k = reduction_factor(long, long_edge)
+        .min(img.width())
+        .min(img.height());
     let img = if k > 1 {
         let (w, h, data) = box_reduce(
             img.as_raw(),
@@ -214,6 +220,19 @@ mod tests {
         let r8 = reduce_long_edge_u8(u, 1600);
         assert_eq!(r8.dimensions(), (1600, 1066));
         assert_eq!(r8.get_pixel(10, 10).0, [10, 200, 90]);
+    }
+
+    /// Found by the fuzz harness: an image far narrower than the reduction
+    /// factor reduced to zero columns and the parallel loop panicked.
+    #[test]
+    fn a_very_narrow_image_reduces_without_vanishing() {
+        let u = RgbImage::from_pixel(3, 4000, Rgb([10, 20, 30]));
+        let r = reduce_long_edge_u8(u, 256);
+        assert_eq!(r.height(), 256);
+        assert!(r.width() >= 1);
+        let f = RgbF32Image::from_pixel(1, 5000, Rgb([0.5, 0.5, 0.5]));
+        let r = reduce_long_edge_f32(f, 64);
+        assert_eq!((r.width(), r.height()), (1, 64));
     }
 
     #[test]

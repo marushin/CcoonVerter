@@ -24,12 +24,14 @@ use crate::controller::{
 };
 use crate::dialogs;
 use crate::i18n::{self, t, tf, Key};
+use crate::marks::MarksWorker;
 use crate::preview::PreviewWorker;
 use crate::preview_panel::PreviewPanel;
 use crate::theme::{
-    self, BG, BORDER, DANGER, PAD_LARGE, PAD_MEDIUM, PANEL, PHOTO_SURROUND, RADIUS_LARGE,
-    RADIUS_MEDIUM, TEXT, TEXT_DIM,
+    self, BG, BORDER, DANGER, NEUTRAL_ACTIVE, NEUTRAL_CONTROL, PAD_LARGE, PAD_MEDIUM, PANEL,
+    PHOTO_SURROUND, RADIUS_LARGE, RADIUS_MEDIUM, TEXT, TEXT_DIM,
 };
+use crate::thumbs::{ThumbWorker, PANEL_MAX_WIDTH, PANEL_MIN_WIDTH, THUMB_SIZE_RANGE};
 use crate::widgets::{self, tip, Columns, SegmentStyle, SliderSpec};
 
 /// Window size on first launch, shrunk to fit a smaller monitor.
@@ -40,6 +42,11 @@ pub const MIN_WINDOW: [f32; 2] = [520.0, 700.0];
 const WIDE_LAYOUT_WIDTH: f32 = 900.0;
 /// Width of the adjustments column in the wide layout.
 const ADJUSTMENTS_WIDTH: f32 = 350.0;
+/// The preview never gets narrower than this when the thumbnail panel is shown.
+const MIN_PREVIEW_WIDTH: f32 = 480.0;
+/// From this window width on there is room for three columns: adjustments,
+/// photo and thumbnail panel. Below it a one-row strip takes the panel's place.
+const GRID_LAYOUT_WIDTH: f32 = ADJUSTMENTS_WIDTH + MIN_PREVIEW_WIDTH + PANEL_MIN_WIDTH;
 /// Height of the bottom bar: fixed, never part of a scroll area.
 const RUN_BAR_HEIGHT: f32 = 76.0;
 /// Label column of the output options dialog.
@@ -52,6 +59,8 @@ const ISSUE_ROW_HEIGHT: f32 = 54.0;
 const NARROW_PREVIEW_HEIGHT: f32 = 300.0;
 /// Height of the drop target in the narrow layout.
 const NARROW_EMPTY_HEIGHT: f32 = 220.0;
+/// Width of the "show all" control in the run bar.
+const RUN_BAR_CLEAR: f32 = 76.0;
 /// How long a notice stays visible.
 const NOTICE_TIME: Duration = Duration::from_secs(6);
 /// Width of a style tile's picture at most.
@@ -74,6 +83,7 @@ enum Action {
     OpenUrl(String),
     OpenResultFolder,
     CloseResult,
+    ClearFilter,
 }
 
 pub struct CcooNverterApp {
@@ -113,6 +123,10 @@ pub struct CcooNverterApp {
     report: Option<BatchReport>,
     /// Brightness slider is being dragged (keeps it on screen at 1.0).
     brightness_active: bool,
+    /// Width of the thumbnail panel, as last laid out.
+    thumb_panel_width: f32,
+    /// (shown, total) when the running batch was narrowed by the filter.
+    batch_filter: Option<(usize, usize)>,
     #[cfg(feature = "capture")]
     capture: Option<crate::capture::Capture>,
 }
@@ -132,13 +146,33 @@ impl CcooNverterApp {
         app_settings: AppSettings,
         presets: PresetStore,
     ) -> Self {
-        let worker = match PreviewWorker::spawn(Box::new(move || ctx.request_repaint())) {
+        let repaint = ctx.clone();
+        let worker = match PreviewWorker::spawn(Box::new(move || repaint.request_repaint())) {
             Ok(w) => Some(w),
             Err(e) => {
                 log::warn!("Preview disabled, could not start its worker: {e}");
                 None
             }
         };
+        let mut preview = PreviewPanel::new(worker, app_settings.preview_open);
+        if let Some(activity) = preview.activity() {
+            let repaint = ctx.clone();
+            match ThumbWorker::spawn(Box::new(move || repaint.request_repaint()), activity) {
+                Ok(w) => preview = preview.with_thumb_worker(w),
+                Err(e) => log::warn!("Thumbnails disabled, could not start their worker: {e}"),
+            }
+        }
+        if let Some(activity) = preview.activity() {
+            let repaint = ctx.clone();
+            match MarksWorker::spawn(Box::new(move || repaint.request_repaint()), activity) {
+                Ok(w) => preview = preview.with_marks_worker(w),
+                Err(e) => log::warn!("Star ratings disabled, could not start their worker: {e}"),
+            }
+        }
+        preview.thumbs_open = app_settings.thumbs_open;
+        preview.thumb_size = app_settings
+            .thumb_size
+            .clamp(*THUMB_SIZE_RANGE.start(), *THUMB_SIZE_RANGE.end());
         let source = app_settings
             .last_source
             .as_ref()
@@ -177,12 +211,16 @@ impl CcooNverterApp {
             close_confirmed: false,
             saved_on_exit: false,
             window_prepared: false,
-            preview: PreviewPanel::new(worker, app_settings.preview_open),
+            preview,
             selection: None,
             notice: None,
             output_options_open: false,
             report: None,
             brightness_active: false,
+            thumb_panel_width: app_settings
+                .thumb_panel_width
+                .clamp(PANEL_MIN_WIDTH, PANEL_MAX_WIDTH),
+            batch_filter: None,
             #[cfg(feature = "capture")]
             capture: crate::capture::Capture::from_env(),
             paths,
@@ -205,6 +243,9 @@ impl CcooNverterApp {
             check_updates: self.check_updates,
             preview_open: self.preview.open,
             language: self.language,
+            thumbs_open: self.preview.thumbs_open,
+            thumb_panel_width: self.thumb_panel_width,
+            thumb_size: self.preview.thumb_size,
         }
     }
 
@@ -263,11 +304,12 @@ impl CcooNverterApp {
             ),
             BatchOutcome::Error(e) => log::error!("Conversion error: {e}"),
         }
-        self.report = Some(BatchReport::new(
-            &outcome,
-            output_dir,
-            &self.paths.log_file(),
-        ));
+        let mut report = BatchReport::new(&outcome, output_dir, &self.paths.log_file());
+        report.filter_note = self
+            .batch_filter
+            .take()
+            .map(|(shown, total)| tf(Key::ResultFilterNote, &[&shown, &total]));
+        self.report = Some(report);
     }
 
     fn poll_update(&mut self, ctx: &egui::Context) {
@@ -414,6 +456,7 @@ impl CcooNverterApp {
                 }
             }
             Action::CloseResult => self.report = None,
+            Action::ClearFilter => self.preview.clear_filter(),
         }
     }
 
@@ -428,10 +471,25 @@ impl CcooNverterApp {
             self.set_notice(reason);
             return;
         }
-        // Dropped files (the selection) take the place of a folder scan.
-        let batch = match &self.selection {
-            Some(selection) => prepare_selection(selection, &self.output),
-            None => match prepare_batch(&self.source, &self.output) {
+        let scope = self.preview.batch_scope();
+        if scope.is_some_and(|s| !s.ready || s.shown == 0) {
+            return; // the button is disabled; nothing is known or shown yet
+        }
+        // Dropped files (the selection) take the place of a folder scan, and
+        // a filter narrows either to exactly the files shown.
+        let batch = match (&self.selection, scope) {
+            (selection, Some(_)) => {
+                let root = selection
+                    .as_ref()
+                    .map_or_else(|| PathBuf::from(self.source.trim()), |s| s.root.clone());
+                let shown = DropSelection {
+                    root,
+                    files: self.preview.shown_files(),
+                };
+                prepare_selection(&shown, &self.output)
+            }
+            (Some(selection), None) => prepare_selection(selection, &self.output),
+            (None, None) => match prepare_batch(&self.source, &self.output) {
                 Ok(b) => b,
                 Err(e) => {
                     self.set_notice(e.message());
@@ -442,6 +500,7 @@ impl CcooNverterApp {
         let settings = self.settings.to_convert();
         match RunningBatch::spawn(batch, settings, None) {
             Ok(job) => {
+                self.batch_filter = scope.map(|s| (s.shown, s.total));
                 self.report = None;
                 self.progress = ProgressView::starting(job.total);
                 self.job = Some(job);
@@ -1044,6 +1103,9 @@ impl CcooNverterApp {
     /// Always visible: status, progress and the primary button.
     fn draw_run_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let converting = self.is_converting();
+        // A filter narrows the batch: say so where the button is.
+        let scope = self.preview.batch_scope().filter(|_| !converting);
+        let can_start = scope.is_none_or(|s| s.ready && s.shown > 0);
         let total = ui.available_width();
         let gap = PAD_LARGE;
         let button_w = (total * 0.34).clamp(190.0, 280.0);
@@ -1059,21 +1121,38 @@ impl CcooNverterApp {
                     ui.set_width(status_w);
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        let eta_w = 124.0;
+                        let eta_w = if scope.is_some() {
+                            RUN_BAR_CLEAR
+                        } else {
+                            124.0
+                        };
                         let text_w = (ui.available_width() - eta_w - 6.0).max(60.0);
+                        let status = match scope {
+                            Some(s) if !s.ready => {
+                                RichText::new(t(Key::MarksReading)).font(theme::font_body_bold())
+                            }
+                            Some(s) => {
+                                RichText::new(tf(Key::FilterBatchNote, &[&s.shown, &s.total]))
+                                    .font(theme::font_body_bold())
+                            }
+                            None => RichText::new(&self.progress.status).font(theme::font_body()),
+                        };
                         widgets::cell(ui, text_w, 20.0, Align::Min, |ui| {
-                            ui.add(
-                                Label::new(
-                                    RichText::new(&self.progress.status)
-                                        .font(theme::font_body())
-                                        .color(TEXT),
-                                )
-                                .truncate(),
-                            );
+                            ui.add(Label::new(status.color(TEXT)).truncate());
                         });
                         widgets::cell(ui, eta_w, 20.0, Align::Max, |ui| {
                             if converting {
                                 widgets::dim_label(ui, &self.progress.eta);
+                            } else if scope.is_some()
+                                && widgets::quiet_button(
+                                    ui,
+                                    t(Key::FilterClear),
+                                    vec2(RUN_BAR_CLEAR - 2.0, 20.0),
+                                    theme::font_small(),
+                                )
+                                .clicked()
+                            {
+                                actions.push(Action::ClearFilter);
                             }
                         });
                     });
@@ -1092,16 +1171,16 @@ impl CcooNverterApp {
                     actions.push(Action::Cancel);
                 }
             }
-            let text = if converting {
-                t(Key::Converting)
-            } else {
-                t(Key::StartButton)
+            let text = match scope {
+                _ if converting => t(Key::Converting).to_string(),
+                Some(s) => tf(Key::StartFiltered, &[&s.shown]),
+                None => t(Key::StartButton).to_string(),
             };
             let main = ui
-                .add_enabled_ui(!converting, |ui| {
+                .add_enabled_ui(!converting && can_start, |ui| {
                     widgets::primary_button(
                         ui,
-                        text,
+                        &text,
                         vec2(button_w, button_h),
                         theme::font_header(),
                     )
@@ -1145,6 +1224,13 @@ impl CcooNverterApp {
                         ui.add_space(8.0);
                         if !report.elapsed.is_empty() {
                             widgets::note(ui, &report.elapsed);
+                        }
+                        if let Some(note) = &report.filter_note {
+                            ui.label(
+                                RichText::new(note)
+                                    .font(theme::font_body_bold())
+                                    .color(TEXT),
+                            );
                         }
                         if report.can_open {
                             widgets::note(
@@ -1277,6 +1363,9 @@ impl CcooNverterApp {
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         self.preview.draw(ui, NARROW_PREVIEW_HEIGHT, embedded);
+                                        if self.preview.strip_height(true) > 0.0 {
+                                            self.preview.draw_strip(ui, true);
+                                        }
                                     });
                             }
                         }
@@ -1323,6 +1412,9 @@ impl CcooNverterApp {
             self.is_converting(),
             visible,
         );
+        if let Some(notice) = self.preview.take_notice() {
+            self.set_notice(notice);
+        }
 
         let mut actions = Vec::new();
 
@@ -1347,6 +1439,11 @@ impl CcooNverterApp {
             )
             .show(ui, |ui| self.draw_paths(ui, &mut actions));
 
+        // Where the three columns fit, the thumbnails get a panel of their own;
+        // otherwise a one-row strip under the photo takes its place.
+        let window_w = ctx.content_rect().width();
+        let shows_photo = self.report.is_none() && self.preview.has_files();
+        let show_panel = window_w >= GRID_LAYOUT_WIDTH && self.preview.thumbs_open && shows_photo;
         if wide {
             Panel::left("adjustments")
                 .exact_size(ADJUSTMENTS_WIDTH)
@@ -1371,6 +1468,33 @@ impl CcooNverterApp {
                                 });
                         });
                 });
+            if show_panel {
+                let max = (window_w - ADJUSTMENTS_WIDTH - MIN_PREVIEW_WIDTH)
+                    .clamp(PANEL_MIN_WIDTH, PANEL_MAX_WIDTH);
+                let panel = Panel::right("thumbnail_panel")
+                    .resizable(true)
+                    .show_separator_line(false)
+                    .default_size(self.thumb_panel_width.clamp(PANEL_MIN_WIDTH, max))
+                    .size_range(PANEL_MIN_WIDTH..=max)
+                    .frame(
+                        Frame::new()
+                            .fill(PHOTO_SURROUND)
+                            .inner_margin(Margin::same(8)),
+                    )
+                    .show(ui, |ui| self.preview.draw_grid(ui));
+                self.thumb_panel_width = panel.response.rect.width();
+                // The grab edge: a neutral hairline, a little brighter when
+                // the pointer is on it.
+                let edge = panel.response.rect.left();
+                let hot = ctx
+                    .pointer_hover_pos()
+                    .is_some_and(|p| (p.x - edge).abs() <= 4.0);
+                ui.painter().vline(
+                    edge,
+                    panel.response.rect.y_range(),
+                    Stroke::new(1.0, if hot { NEUTRAL_ACTIVE } else { NEUTRAL_CONTROL }),
+                );
+            }
             egui::CentralPanel::default()
                 .frame(
                     Frame::new()
@@ -1384,8 +1508,17 @@ impl CcooNverterApp {
                         self.draw_result_card(ui, &mut actions, height);
                     } else {
                         let embedded = self.settings.extract_embedded;
-                        let image_h = (height - 32.0).max(120.0);
+                        let strip = if window_w < GRID_LAYOUT_WIDTH {
+                            self.preview.strip_height(false)
+                        } else {
+                            0.0
+                        };
+                        let stars = self.preview.stars_row_height();
+                        let image_h = (height - 32.0 - strip - stars).max(120.0);
                         self.preview.draw(ui, image_h, embedded);
+                        if strip > 0.0 {
+                            self.preview.draw_strip(ui, false);
+                        }
                     }
                 });
         } else {
@@ -1398,6 +1531,13 @@ impl CcooNverterApp {
         self.draw_update_modal(&ctx, &mut actions);
         self.draw_output_options_modal(&ctx);
         self.draw_overlays(&ctx);
+
+        let dialog_open = self.output_options_open
+            || self.preset_name_input.is_some()
+            || self.update_info.is_some();
+        if visible && self.report.is_none() && !dialog_open {
+            self.preview.handle_nav_keys(&ctx);
+        }
 
         for action in actions {
             self.run_action(action, &ctx, frame);

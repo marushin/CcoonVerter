@@ -212,9 +212,55 @@ pub struct SliderResult {
     pub active: bool,
 }
 
+/// Colours of a slider.
+struct SliderPalette {
+    rail: egui::Color32,
+    fill: egui::Color32,
+    handle: egui::Color32,
+    hover: egui::Color32,
+    active_fill: egui::Color32,
+    active_handle: egui::Color32,
+}
+
 /// Horizontal slider, filled from `spec.origin` to the value. Grey until it
 /// is being moved; double click returns it to `spec.default`.
 pub fn slider(ui: &mut Ui, value: &mut f32, spec: &SliderSpec<'_>, width: f32) -> SliderResult {
+    let palette = SliderPalette {
+        rail: RAIL,
+        fill: FILL_IDLE,
+        handle: TEXT_DIM,
+        hover: TEXT,
+        active_fill: ACCENT,
+        active_handle: ACCENT_HOVER,
+    };
+    slider_with(ui, value, spec, width, &palette)
+}
+
+/// A [`slider`] that stays strictly grey, for use right beside the photos.
+pub fn neutral_slider(
+    ui: &mut Ui,
+    value: &mut f32,
+    spec: &SliderSpec<'_>,
+    width: f32,
+) -> SliderResult {
+    let palette = SliderPalette {
+        rail: theme::NEUTRAL_CONTROL,
+        fill: theme::NEUTRAL_ACTIVE,
+        handle: theme::NEUTRAL_DIM,
+        hover: theme::NEUTRAL_TEXT,
+        active_fill: theme::NEUTRAL_ACTIVE,
+        active_handle: theme::NEUTRAL_TEXT,
+    };
+    slider_with(ui, value, spec, width, &palette)
+}
+
+fn slider_with(
+    ui: &mut Ui,
+    value: &mut f32,
+    spec: &SliderSpec<'_>,
+    width: f32,
+    palette: &SliderPalette,
+) -> SliderResult {
     let height = 20.0;
     let (min, max) = (*spec.range.start(), *spec.range.end());
     let (rect, mut resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
@@ -272,22 +318,22 @@ pub fn slider(ui: &mut Ui, value: &mut f32, spec: &SliderSpec<'_>, width: f32) -
         p.rect_filled(
             Rect::from_min_max(pos2(left, cy - 2.0), pos2(right, cy + 2.0)),
             2.0,
-            RAIL,
+            palette.rail,
         );
         if origin > left + 0.5 && origin < right - 0.5 {
             // Centre mark of a bipolar value.
             p.rect_filled(
                 Rect::from_center_size(pos2(origin, cy), vec2(2.0, 10.0)),
                 1.0,
-                FILL_IDLE,
+                palette.fill,
             );
         }
         let (color, handle) = if active {
-            (ACCENT, ACCENT_HOVER)
+            (palette.active_fill, palette.active_handle)
         } else if resp.hovered() {
-            (FILL_IDLE, TEXT)
+            (palette.fill, palette.hover)
         } else {
-            (FILL_IDLE, TEXT_DIM)
+            (palette.fill, palette.handle)
         };
         let (a, b) = (origin.min(x), origin.max(x));
         if b - a > 0.5 {

@@ -29,6 +29,8 @@ pub const NEUTRAL_CONTROL: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
 pub const NEUTRAL_ACTIVE: Color32 = Color32::from_rgb(0x5c, 0x5c, 0x5c);
 pub const NEUTRAL_TEXT: Color32 = Color32::from_rgb(0xe6, 0xe6, 0xe6);
 pub const NEUTRAL_DIM: Color32 = Color32::from_rgb(0xb0, 0xb0, 0xb0);
+/// Tile behind a thumbnail, a little lighter than the panel around it.
+pub const THUMB_TILE: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
 
 /// Butter, the mean of the icon's cube face (`assets/icon_256.png`).
 pub const ACCENT: Color32 = Color32::from_rgb(0xfc, 0xcb, 0x59);
@@ -210,6 +212,8 @@ pub mod tests {
             ("preview active text", NEUTRAL_TEXT, NEUTRAL_ACTIVE),
             ("preview status text", NEUTRAL_DIM, PHOTO_SURROUND),
             ("preview text", NEUTRAL_TEXT, PHOTO_SURROUND),
+            ("thumbnail name", NEUTRAL_DIM, PHOTO_SURROUND),
+            ("thumbnail tile label", NEUTRAL_DIM, THUMB_TILE),
         ];
         for (name, fg, bg) in pairs {
             let ratio = contrast(fg, bg);
@@ -226,6 +230,7 @@ pub mod tests {
             NEUTRAL_ACTIVE,
             NEUTRAL_TEXT,
             NEUTRAL_DIM,
+            THUMB_TILE,
         ] {
             assert!(c.r() == c.g() && c.g() == c.b(), "{c:?}");
         }

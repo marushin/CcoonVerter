@@ -202,6 +202,8 @@ pub(crate) struct RawCtx<'a> {
     decoder: Option<Box<dyn Decoder>>,
     decoder_err: Option<String>,
     metadata: Option<RawMetadata>,
+    /// Rating stored in the XMP sidecar, which wins over the RAW's own value.
+    sidecar_rating: Option<u8>,
 }
 
 impl<'a> RawCtx<'a> {
@@ -220,6 +222,7 @@ impl<'a> RawCtx<'a> {
             decoder,
             decoder_err,
             metadata,
+            sidecar_rating: None,
         }
     }
 
@@ -233,10 +236,13 @@ impl<'a> RawCtx<'a> {
         })
     }
 
-    /// RAW metadata plus the rating from the file's XMP packet, if any.
+    /// RAW metadata plus the rating: the XMP sidecar's, then the file's own
+    /// XMP packet.
     fn exif_info(&self) -> Option<ExifInfo> {
         let mut info = self.metadata.as_ref().map(ExifInfo::from_rawler)?;
-        if info.rating.is_none() {
+        if let Some(stored) = self.sidecar_rating {
+            info.rating = (1..=5).contains(&stored).then_some(u32::from(stored));
+        } else if info.rating.is_none() {
             info.rating = exifmod::find_xmp_rating(self.source.buf());
         }
         Some(info)
@@ -289,7 +295,10 @@ pub fn convert_one(
 
     log::info!("Converting {name}...");
     let source = RawSource::new(&task.source).map_err(|e| ConvertError::io(&task.source, e))?;
-    let ctx = RawCtx::new(&source);
+    let mut ctx = RawCtx::new(&source);
+    if settings.preserve_exif {
+        ctx.sidecar_rating = crate::sidecar::stored_rating(&task.source);
+    }
     check(cancel)?;
 
     let mut fell_back = false;
@@ -416,7 +425,15 @@ fn with_rating(ctx: &RawCtx, preserve: bool, jpeg: Vec<u8>) -> Vec<u8> {
     if !preserve {
         return jpeg;
     }
-    match ctx.exif_info().and_then(|i| i.rating) {
+    let rating = ctx.exif_info().and_then(|i| i.rating);
+    if ctx.sidecar_rating.is_some() {
+        // The sidecar decides, even over a packet already in the camera JPEG.
+        return exifmod::set_xmp_rating(&jpeg, rating).unwrap_or_else(|e| {
+            log::warn!("Could not write the XMP rating: {e}");
+            jpeg
+        });
+    }
+    match rating {
         Some(r) => exifmod::add_xmp_rating(&jpeg, r).unwrap_or_else(|e| {
             log::warn!("Could not write the XMP rating: {e}");
             jpeg
@@ -809,6 +826,48 @@ mod tests {
             convert_one(&t, &s3, &cancel).unwrap(),
             ConvertOutcome::Skipped { .. }
         ));
+    }
+
+    #[test]
+    fn the_sidecar_rating_reaches_the_output_only_when_exif_is_kept() {
+        use crate::testutil::{synthetic_dng, DngSpec};
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.DNG");
+        let dng = synthetic_dng(&DngSpec::default());
+        fs::write(&src, &dng).unwrap();
+        crate::sidecar::save_stars(&src, 4).unwrap();
+        let out = dir.path().join("out");
+        let task = FileTask::new(&src, dir.path(), &out);
+        let cancel = AtomicBool::new(false);
+        let convert = |exif: bool, camera_jpeg: bool| {
+            let settings = ConvertSettings {
+                on_conflict: ConflictPolicy::Overwrite,
+                preserve_exif: exif,
+                extract_embedded: camera_jpeg,
+                ..Default::default()
+            };
+            let ConvertOutcome::Converted { output, .. } =
+                convert_one(&task, &settings, &cancel).unwrap()
+            else {
+                panic!("expected conversion");
+            };
+            exifmod::find_xmp_rating(&fs::read(output).unwrap())
+        };
+        assert_eq!(convert(true, false), Some(4), "developed, EXIF kept");
+        assert_eq!(convert(true, true), Some(4), "camera JPEG, EXIF kept");
+        assert_eq!(convert(false, false), None, "EXIF off: not written");
+        assert_eq!(convert(false, true), None, "EXIF off: not written");
+        assert_eq!(fs::read(&src).unwrap(), dng, "the RAW is untouched");
+    }
+
+    #[test]
+    fn a_cleared_sidecar_rating_beats_the_jpeg_packet() {
+        let jpeg = crate::embedded::tests::tiny_jpeg(16, 16, [9, 9, 9]);
+        let rated = exifmod::add_xmp_rating(&jpeg, 3).unwrap();
+        let changed = exifmod::set_xmp_rating(&rated, Some(5)).unwrap();
+        assert_eq!(exifmod::find_xmp_rating(&changed), Some(5));
+        let cleared = exifmod::set_xmp_rating(&rated, None).unwrap();
+        assert_eq!(exifmod::find_xmp_rating(&cleared), None);
     }
 
     #[test]

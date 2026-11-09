@@ -18,12 +18,16 @@ use eframe::egui::{
 
 use crate::controller::DropSelection;
 use crate::i18n::{t, tf, Key};
+use crate::marks::{self, Marks, MarksWorker};
 use crate::preview::{
     desired_request, short_message, view_origin, Histogram, PreviewEvent, PreviewWorker,
     RenderRequest, ThumbRequest, ZoomRequest, HISTOGRAM_BINS,
 };
 use crate::theme::{
     self, NEUTRAL_DIM, NEUTRAL_TEXT, PHOTO_SURROUND, RADIUS_LARGE, RADIUS_MEDIUM, RADIUS_SMALL,
+};
+use crate::thumbs::{
+    self, FileView, ThumbBrowser, ThumbWorker, STRIP_MARGIN, STRIP_TILE, STRIP_TILE_COMPACT,
 };
 use crate::widgets::{self, tip, SegmentStyle};
 
@@ -59,6 +63,28 @@ pub enum Zoom {
     Fit,
     Actual,
 }
+
+/// Which files are shown. Never saved: it starts at `All` for every folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filter {
+    All,
+    /// Files with at least this many stars.
+    Rated(u8),
+}
+
+/// What a filter does to a batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchScope {
+    pub shown: usize,
+    pub total: usize,
+    /// Every file's stars have been read, so `shown` is final.
+    pub ready: bool,
+}
+
+/// Height of the row of stars under the photo.
+const STARS_ROW_HEIGHT: f32 = 26.0;
+/// Height of the filter row at the top of the panel.
+const FILTER_ROW_HEIGHT: f32 = 30.0;
 
 pub struct PreviewPanel {
     worker: Option<PreviewWorker>,
@@ -109,8 +135,24 @@ pub struct PreviewPanel {
     thumb_key: Option<ThumbRequest>,
     thumb_changed: Instant,
     thumb_sent: Option<Instant>,
+
+    /// Thumbnails of the files in the list.
+    browser: ThumbBrowser,
+    /// Star ratings of the files in the list.
+    marks: Marks,
+    filter: Filter,
+    /// Indices shown by the filter, ascending; `None` means every file.
+    shown: Option<Vec<usize>>,
+    /// (ratings revision, filter) that `shown` was built for.
+    shown_key: Option<(u64, Filter)>,
+    /// The thumbnail panel (or strip) is shown.
+    pub thumbs_open: bool,
+    /// Size of a thumbnail in points.
+    pub thumb_size: f32,
     #[cfg(test)]
     injected: Option<(PathBuf, [u32; 2], Region, ColorImage)>,
+    #[cfg(test)]
+    image_rect: Rect,
 }
 
 impl PreviewPanel {
@@ -118,6 +160,13 @@ impl PreviewPanel {
         Self {
             worker,
             open,
+            browser: ThumbBrowser::new(None),
+            marks: Marks::new(None),
+            filter: Filter::All,
+            shown: None,
+            shown_key: None,
+            thumbs_open: true,
+            thumb_size: ccoonverter_core::settings::DEFAULT_THUMB_SIZE,
             source_key: None,
             scan_due: None,
             files: Vec::new(),
@@ -152,11 +201,93 @@ impl PreviewPanel {
             thumb_sent: None,
             #[cfg(test)]
             injected: None,
+            #[cfg(test)]
+            image_rect: Rect::NOTHING,
         }
+    }
+
+    /// Attach the threads that make the thumbnails.
+    pub fn with_thumb_worker(mut self, worker: ThumbWorker) -> Self {
+        self.browser = ThumbBrowser::new(Some(worker));
+        self
+    }
+
+    /// Attach the thread that reads and saves star ratings.
+    pub fn with_marks_worker(mut self, worker: MarksWorker) -> Self {
+        self.marks = Marks::new(Some(worker));
+        self
+    }
+
+    /// A message the window should show as a notice.
+    pub fn take_notice(&mut self) -> Option<String> {
+        self.marks.take_notice()
+    }
+
+    fn view(&self) -> FileView<'_> {
+        FileView {
+            files: &self.files,
+            order: self.shown.as_deref(),
+        }
+    }
+
+    /// Set while a filter narrows the list.
+    pub fn batch_scope(&self) -> Option<BatchScope> {
+        self.shown.as_ref().map(|shown| BatchScope {
+            shown: shown.len(),
+            total: self.files.len(),
+            ready: self.marks.loaded(),
+        })
+    }
+
+    /// The files a filtered batch converts.
+    pub fn shown_files(&self) -> Vec<PathBuf> {
+        let view = self.view();
+        (0..view.len())
+            .map(|pos| self.files[view.index_at(pos)].clone())
+            .collect()
+    }
+
+    pub fn clear_filter(&mut self) {
+        self.filter = Filter::All;
+    }
+
+    fn rebuild_shown(&mut self) {
+        let key = (self.marks.revision(), self.filter);
+        if self.shown_key == Some(key) {
+            return;
+        }
+        let was_filtered = self.shown.is_some();
+        self.shown_key = Some(key);
+        self.shown = match self.filter {
+            Filter::All => None,
+            Filter::Rated(min) => Some(
+                (0..self.files.len())
+                    .filter(|&i| self.marks.stars(i) >= min)
+                    .collect(),
+            ),
+        };
+        if was_filtered || self.shown.is_some() {
+            self.browser.view_changed();
+        }
+        // The file on screen may just have been filtered out.
+        let view = self.view();
+        if view.len() > 0 {
+            let nearest = view.index_at(view.position_of(self.index));
+            self.select(nearest);
+        }
+    }
+
+    /// How busy the preview worker is, for the thumbnail worker.
+    pub fn activity(&self) -> Option<std::sync::Arc<crate::preview::Activity>> {
+        self.worker.as_ref().map(PreviewWorker::activity)
     }
 
     fn current(&self) -> Option<&PathBuf> {
         self.files.get(self.index)
+    }
+
+    pub fn has_files(&self) -> bool {
+        !self.files.is_empty()
     }
 
     /// No folder chosen yet: the drop target is the main thing on screen.
@@ -189,18 +320,256 @@ impl PreviewPanel {
         self.files = files;
         self.index = 0;
         self.clear_images();
+        self.browser.reset();
+        self.marks.reset(&self.files);
+        self.filter = Filter::All;
+        self.shown = None;
+        self.shown_key = None;
         self.last_sent = None;
         self.message = self.files.is_empty().then(|| t(Key::NoRawHere).to_string());
     }
 
+    /// Move through the files shown, wrapping at the ends.
     fn step(&mut self, delta: isize) {
-        let n = self.files.len();
+        let view = self.view();
+        let n = view.len();
         if n == 0 {
             return;
         }
-        self.index = (self.index as isize + delta).rem_euclid(n as isize) as usize;
+        let pos = view.position_of(self.index) as isize;
+        let index = view.index_at((pos + delta).rem_euclid(n as isize) as usize);
+        self.index = index;
         self.clear_images();
         self.message = None;
+    }
+
+    /// Show the file at `index`. The file already shown stays as it is.
+    fn select(&mut self, index: usize) {
+        if index == self.index || index >= self.files.len() {
+            return;
+        }
+        self.index = index;
+        self.clear_images();
+        self.message = None;
+    }
+
+    /// Arrow keys: Left and Right step through the files like `<` and `>`,
+    /// Up and Down move by a row of the grid, 1 to 5 set the stars of the
+    /// current file and 0 clears them. Ignored while a text field or menu
+    /// needs the keys (the caller checks for dialogs).
+    pub fn handle_nav_keys(&mut self, ctx: &egui::Context) {
+        if self.files.is_empty() || ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx)
+        {
+            return;
+        }
+        let pressed = |key| ctx.input(|i| i.modifiers.is_none() && i.key_pressed(key));
+        let before = (self.index, self.marks.revision());
+        let n = self.view().len();
+        if n > 1 {
+            let pos = self.view().position_of(self.index);
+            if pressed(egui::Key::ArrowLeft) {
+                self.step(-1);
+            } else if pressed(egui::Key::ArrowRight) {
+                self.step(1);
+            } else if let Some(columns) = self.browser.columns() {
+                if pressed(egui::Key::ArrowUp) && pos >= columns {
+                    let i = self.view().index_at(pos - columns);
+                    self.select(i);
+                } else if pressed(egui::Key::ArrowDown) && pos + columns < n {
+                    let i = self.view().index_at(pos + columns);
+                    self.select(i);
+                }
+            }
+        }
+        let keys = [
+            (egui::Key::Num0, 0u8),
+            (egui::Key::Num1, 1),
+            (egui::Key::Num2, 2),
+            (egui::Key::Num3, 3),
+            (egui::Key::Num4, 4),
+            (egui::Key::Num5, 5),
+        ];
+        if let Some(&(_, stars)) = keys.iter().find(|(key, _)| pressed(*key)) {
+            if self.current_is_shown() {
+                self.marks.set(self.index, stars, &self.files);
+            }
+        }
+        if (self.index, self.marks.revision()) != before {
+            ctx.request_repaint();
+        }
+    }
+
+    fn current_is_shown(&self) -> bool {
+        self.index < self.files.len()
+            && self
+                .shown
+                .as_ref()
+                .is_none_or(|shown| shown.binary_search(&self.index).is_ok())
+    }
+
+    /// All / Rated, and the minimum number of stars for Rated.
+    fn draw_filter_row(&mut self, ui: &mut Ui) {
+        ui.add_enabled_ui(!self.paused, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let rated = matches!(self.filter, Filter::Rated(_));
+                let chosen = widgets::segmented(
+                    ui,
+                    &[t(Key::FilterAll), t(Key::FilterRated)],
+                    usize::from(rated),
+                    vec2(92.0, 24.0),
+                    SegmentStyle::Neutral,
+                );
+                match chosen {
+                    Some(0) => self.filter = Filter::All,
+                    Some(_) if !rated => self.filter = Filter::Rated(1),
+                    _ => {}
+                }
+                if let Filter::Rated(min) = self.filter {
+                    let (rect, _) = ui.allocate_exact_size(vec2(66.0, 24.0), Sense::hover());
+                    let set = marks::star_row(
+                        ui,
+                        rect,
+                        10.0,
+                        13.0,
+                        min,
+                        t(Key::MinStarsLabel),
+                        "filter_min",
+                        t(Key::TipFilter),
+                    );
+                    if let Some(n @ 1..=5) = set {
+                        self.filter = Filter::Rated(n);
+                    }
+                }
+            });
+        });
+        ui.add_space(FILTER_ROW_HEIGHT - 28.0);
+    }
+
+    fn count_text(&self) -> String {
+        let total = self.files.len();
+        let base = match &self.shown {
+            Some(shown) => format!("{} / {total}", shown.len()),
+            None => tf(Key::ThumbsCount, &[&total]),
+        };
+        if self.marks.loaded() {
+            base
+        } else {
+            format!("{base}  ·  {}", t(Key::MarksReading))
+        }
+    }
+
+    /// The right-hand panel: filter row, grid, footer.
+    pub fn draw_grid(&mut self, ui: &mut Ui) {
+        self.draw_filter_row(ui);
+        let view = FileView {
+            files: &self.files,
+            order: self.shown.as_deref(),
+        };
+        if view.len() == 0 {
+            self.browser.draw_nothing();
+            let width = ui.available_width();
+            let height = (ui.available_height() - 32.0).max(80.0);
+            let mut clear = false;
+            ui.allocate_ui(vec2(width, height), |ui| {
+                ui.set_min_height(height);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(height * 0.3);
+                    ui.label(
+                        RichText::new(t(Key::FilterEmpty))
+                            .font(theme::font_body())
+                            .color(NEUTRAL_DIM),
+                    );
+                    ui.add_space(8.0);
+                    clear = widgets::neutral_button(
+                        ui,
+                        t(Key::FilterClear),
+                        vec2(110.0, 24.0),
+                        theme::font_small_bold(),
+                        false,
+                    )
+                    .clicked();
+                });
+            });
+            let count = self.count_text();
+            thumbs::draw_footer(ui, &count, &mut self.thumb_size, width);
+            if clear {
+                self.filter = Filter::All;
+            }
+            return;
+        }
+        let count = self.count_text();
+        let click = self.browser.draw_grid(
+            ui,
+            view,
+            &self.marks,
+            self.index,
+            &mut self.thumb_size,
+            &count,
+        );
+        if let Some((i, stars)) = click.stars {
+            self.marks.set(i, stars, &self.files);
+        }
+        if let Some(i) = click.open {
+            self.select(i);
+        }
+    }
+
+    /// One row of thumbnails under the photo.
+    pub fn draw_strip(&mut self, ui: &mut Ui, compact: bool) {
+        ui.add_space(STRIP_MARGIN);
+        let tile = strip_tile(compact);
+        let view = FileView {
+            files: &self.files,
+            order: self.shown.as_deref(),
+        };
+        let clicked = self.browser.draw_strip(ui, view, self.index, tile);
+        if let Some(i) = clicked {
+            self.select(i);
+        }
+    }
+
+    /// Height taken by the row of stars under the photo.
+    pub fn stars_row_height(&self) -> f32 {
+        if self.has_files() {
+            STARS_ROW_HEIGHT + 4.0
+        } else {
+            0.0
+        }
+    }
+
+    /// The stars of the current file, under the photo.
+    fn draw_current_stars(&mut self, ui: &mut Ui) {
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(vec2(width, STARS_ROW_HEIGHT), Sense::hover());
+        if !self.current_is_shown() {
+            return;
+        }
+        let name = self
+            .current()
+            .map_or_else(String::new, |p| marks::display_name(p));
+        let set = marks::star_row(
+            ui,
+            rect,
+            16.0,
+            22.0,
+            self.marks.stars(self.index),
+            &name,
+            "preview",
+            t(Key::TipStars),
+        );
+        if let Some(stars) = set {
+            self.marks.set(self.index, stars, &self.files);
+        }
+    }
+
+    /// Height taken by [`Self::draw_strip`].
+    pub fn strip_height(&self, compact: bool) -> f32 {
+        if self.thumbs_open && self.has_files() {
+            strip_tile(compact) + STRIP_MARGIN
+        } else {
+            0.0
+        }
     }
 
     fn set_zoom(&mut self, zoom: Zoom) {
@@ -231,6 +600,9 @@ impl PreviewPanel {
         self.max_texture_side = ctx.input(|i| i.max_texture_side).min(u32::MAX as usize) as u32;
         #[cfg(test)]
         self.apply_injected_crop(ctx);
+        self.browser.begin_frame(ctx, converting);
+        self.marks.poll(ctx, converting);
+        self.rebuild_shown();
         let Some(worker) = self.worker.as_ref() else {
             return;
         };
@@ -430,6 +802,7 @@ impl PreviewPanel {
                 ..
             } => {
                 if self.current() == Some(&file) {
+                    self.browser.offer_developed(ctx, self.index, &image);
                     match self.developed.take() {
                         Some(mut frame) => {
                             frame.size = image.size;
@@ -547,7 +920,8 @@ impl PreviewPanel {
     }
 
     fn draw_toolbar(&mut self, ui: &mut Ui, embedded_mode: bool) {
-        let n = self.files.len();
+        let n = self.view().len();
+        let position = self.view().position_of(self.index) + 1;
         let mut step = 0isize;
         let font = theme::font_small_bold();
         let has_image = self.developed.is_some() || self.embedded.is_some();
@@ -568,11 +942,11 @@ impl PreviewPanel {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let label = if n > 0 {
-                format!("{}/{n}  {name}", self.index + 1)
+                format!("{position}/{n}  {name}")
             } else {
                 String::new()
             };
-            let controls_w = 124.0 + 4.0 + 72.0 + 4.0 + 84.0;
+            let controls_w = 124.0 + 4.0 + 72.0 + 4.0 + 84.0 + 4.0 + 72.0;
             let name_w = (ui.available_width() - controls_w - 8.0).max(40.0);
             widgets::cell(ui, name_w, 26.0, Align::Min, |ui| {
                 ui.add(
@@ -586,6 +960,16 @@ impl PreviewPanel {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
+                let thumbs = widgets::neutral_button(
+                    ui,
+                    t(Key::ThumbsToggle),
+                    vec2(72.0, 24.0),
+                    font.clone(),
+                    self.thumbs_open,
+                );
+                if tip(thumbs, t(Key::TipThumbsToggle)).clicked() {
+                    self.thumbs_open = !self.thumbs_open;
+                }
                 let hist = widgets::neutral_button(
                     ui,
                     t(Key::Histogram),
@@ -947,6 +1331,10 @@ impl PreviewPanel {
         let width = ui.available_width();
         let (rect, resp) =
             ui.allocate_exact_size(vec2(width, image_height.max(80.0)), Sense::click_and_drag());
+        #[cfg(test)]
+        {
+            self.image_rect = rect;
+        }
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, RADIUS_MEDIUM, PHOTO_SURROUND);
 
@@ -982,6 +1370,17 @@ impl PreviewPanel {
                 tag(&painter, rect.left_bottom() + vec2(8.0, -28.0), &status);
             }
         }
+        if self.has_files() {
+            self.draw_current_stars(ui);
+        }
+    }
+}
+
+fn strip_tile(compact: bool) -> f32 {
+    if compact {
+        STRIP_TILE_COMPACT
+    } else {
+        STRIP_TILE
     }
 }
 
@@ -1102,6 +1501,7 @@ impl PreviewPanel {
         self.index == index
             && self.developed.is_some()
             && self.thumbs.len() == PictureStyle::ALL.len()
+            && self.browser.is_settled()
     }
 }
 
@@ -1150,6 +1550,43 @@ impl PreviewPanel {
 
     pub fn current_index(&self) -> usize {
         self.index
+    }
+
+    pub fn image_rect(&self) -> Rect {
+        self.image_rect
+    }
+
+    pub fn stars_of(&self, index: usize) -> u8 {
+        self.marks.stars(index)
+    }
+
+    pub fn marks_loaded(&self) -> bool {
+        self.marks.loaded()
+    }
+
+    pub fn set_filter(&mut self, filter: Filter) {
+        self.filter = filter;
+    }
+
+    pub fn shown_count(&self) -> usize {
+        self.view().len()
+    }
+
+    pub fn set_stars(&mut self, index: usize, stars: u8) {
+        self.marks.set(index, stars, &self.files);
+    }
+
+    pub fn browser(&self) -> &ThumbBrowser {
+        &self.browser
+    }
+
+    pub fn browser_mut(&mut self) -> &mut ThumbBrowser {
+        &mut self.browser
+    }
+
+    /// A list of `n` paths that need not exist (the 10,000-entry measurements).
+    pub fn set_file_list(&mut self, files: Vec<PathBuf>) {
+        self.set_files(files);
     }
 
     pub fn view_px(&self) -> [u32; 2] {

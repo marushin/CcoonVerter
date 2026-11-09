@@ -11,11 +11,11 @@
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use ccoonverter_core::develop::LinearBase;
 use ccoonverter_core::preview::{self, PREVIEW_LONG_EDGE};
@@ -34,6 +34,51 @@ const ZOOM_OVERSCAN: u32 = 256;
 /// The histogram samples about this many pixels.
 const HISTOGRAM_SAMPLES: usize = 250_000;
 pub const HISTOGRAM_BINS: usize = 64;
+
+/// Whether the preview worker is doing something right now, or was a moment
+/// ago. The thumbnail worker reads this to stay out of its way.
+#[derive(Debug)]
+pub struct Activity {
+    epoch: Instant,
+    busy: AtomicBool,
+    /// Milliseconds after `epoch` of the last finished job.
+    last_end_ms: AtomicU64,
+}
+
+impl Activity {
+    pub fn new() -> Self {
+        Self {
+            epoch: Instant::now(),
+            busy: AtomicBool::new(false),
+            last_end_ms: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn enter(self: &Arc<Self>) -> Busy {
+        self.busy.store(true, Ordering::SeqCst);
+        Busy(Arc::clone(self))
+    }
+
+    /// Nothing has run for at least `quiet`.
+    pub fn idle_for(&self, quiet: Duration) -> bool {
+        if self.busy.load(Ordering::SeqCst) {
+            return false;
+        }
+        let now = self.epoch.elapsed().as_millis() as u64;
+        now.saturating_sub(self.last_end_ms.load(Ordering::SeqCst)) >= quiet.as_millis() as u64
+    }
+}
+
+/// Held while a job runs; released even if the job panics.
+pub struct Busy(Arc<Activity>);
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        let ms = self.0.epoch.elapsed().as_millis() as u64;
+        self.0.last_end_ms.store(ms, Ordering::SeqCst);
+        self.0.busy.store(false, Ordering::SeqCst);
+    }
+}
 
 /// Share of a developed image in each brightness bin, per channel.
 #[derive(Debug, Clone, PartialEq)]
@@ -231,6 +276,7 @@ struct Slots {
 struct Shared {
     slots: Mutex<Slots>,
     cv: Condvar,
+    activity: Arc<Activity>,
     /// Full-resolution releases carried out, for tests.
     #[cfg(test)]
     full_releases: std::sync::atomic::AtomicUsize,
@@ -255,6 +301,7 @@ impl PreviewWorker {
         let shared = Arc::new(Shared {
             slots: Mutex::new(Slots::default()),
             cv: Condvar::new(),
+            activity: Arc::new(Activity::new()),
             #[cfg(test)]
             full_releases: Default::default(),
         });
@@ -269,6 +316,11 @@ impl PreviewWorker {
             handle: Some(handle),
             next_id: 0,
         })
+    }
+
+    /// How busy this worker is, for the thumbnail worker's benefit.
+    pub fn activity(&self) -> Arc<Activity> {
+        Arc::clone(&self.shared.activity)
     }
 
     /// Ask for a folder scan (replaces a pending scan).
@@ -453,7 +505,9 @@ impl Worker {
 
     fn run(mut self) {
         loop {
-            match self.next_job() {
+            let job = self.next_job();
+            let _busy = self.shared.activity.enter();
+            match job {
                 Job::Stop => break,
                 Job::Scan(root) => self.do_scan(root),
                 Job::Render(id, req) => self.do_render(id, req),

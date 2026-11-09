@@ -103,6 +103,30 @@ The preview goes through the same processing as the saved file. What you see is 
 
 In a narrow window the preview is opened with the **Show preview** button. The preview pauses while a conversion runs.
 
+### Thumbnail panel
+
+To the right of the preview, the files of the folder appear as thumbnails, for going through a large folder quickly.
+
+- Click a thumbnail to show that file in the preview. Move with the `<` `>` buttons or the Left and Right arrow keys and the butter outline follows; Up and Down move by a row. While the cursor is in a text field the arrow keys go to the text.
+- Thumbnails show **the JPEG the camera saved inside the RAW**. They do not change when you move the adjustment sliders, on purpose. A file with no camera JPEG shows its extension; once it has been developed for the preview, that picture takes its place.
+- The slider at the bottom of the panel sets the thumbnail size and the columns adapt. Drag the left edge of the panel to resize it, or hide it with the **Thumbnails** button in the toolbar. These settings are remembered.
+- In a narrow window (under 1000 wide) the panel is replaced by a single row under the photo, which disappears together with the preview.
+- No new thumbnails are made while a conversion runs.
+
+### Stars and the filter
+
+Give the photos you like some stars, then gather them with the filter.
+
+- Click the stars under a thumbnail or under the large photo to set 0 to 5; clicking the same star again clears them. When the cursor is not in a text field, keys **1 to 5** set stars and **0** clears them.
+- Stars are saved in `name.xmp` beside the RAW, which Bridge and Lightroom read too. An existing `.xmp` only has its rating changed, and the RAW is never touched. If a rating cannot be saved (a read-only folder, for instance) you get a notice and it stays for this session only.
+- **All / Rated** at the top of the panel narrows the list; with **Rated**, the stars beside it set the minimum. The filter is not remembered between sessions.
+- **While a filter is on, only the photos shown are converted.** The run bar says so ("Filter on: 12 of 38 files"), the button changes to "Cook 12 Shown", and the result card repeats it. **Show all** goes back to converting every file.
+- With "Keep EXIF shooting data" on, ratings reach the converted files. With it off, they do not.
+
+![The filter on](screenshots/thumbs_filter_en.png)
+
+![The thumbnail row in a narrow window](screenshots/thumbs_strip_en.png)
+
 ## 6. Output options
 
 Set these in the **Output** section on the left.

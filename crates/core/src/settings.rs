@@ -596,7 +596,21 @@ pub struct AppSettings {
     pub preview_open: bool,
     /// Interface language (new in 0.11.0).
     pub language: UiLanguage,
+    /// Thumbnail panel shown (new in 1.0.0).
+    #[serde(deserialize_with = "lenient::bool_")]
+    pub thumbs_open: bool,
+    /// Width of the thumbnail panel in points (new in 1.0.0).
+    #[serde(deserialize_with = "lenient::f32_")]
+    pub thumb_panel_width: f32,
+    /// Size of a thumbnail in points (new in 1.0.0).
+    #[serde(deserialize_with = "lenient::f32_")]
+    pub thumb_size: f32,
 }
+
+/// Default width of the thumbnail panel: room for two columns.
+pub const DEFAULT_THUMB_PANEL_WIDTH: f32 = 240.0;
+/// Default thumbnail size.
+pub const DEFAULT_THUMB_SIZE: f32 = 104.0;
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -607,6 +621,9 @@ impl Default for AppSettings {
             check_updates: true,
             preview_open: false,
             language: UiLanguage::Auto,
+            thumbs_open: true,
+            thumb_panel_width: DEFAULT_THUMB_PANEL_WIDTH,
+            thumb_size: DEFAULT_THUMB_SIZE,
         }
     }
 }
@@ -788,6 +805,9 @@ mod tests {
         assert!(!s.preview_open);
         assert!(!s.convert.keep_source_date);
         assert_eq!(s.language, UiLanguage::Auto);
+        assert!(s.thumbs_open, "thumbnail panel on for an old settings file");
+        assert_eq!(s.thumb_panel_width, DEFAULT_THUMB_PANEL_WIDTH);
+        assert_eq!(s.thumb_size, DEFAULT_THUMB_SIZE);
 
         let v090 = r#"{"resize": 0, "quality": 90, "brightness": 1.4,
             "white_balance": "Auto", "style": "HDR", "rgb_red": 1.0, "rgb_green": 1.0,
@@ -901,6 +921,9 @@ mod tests {
         s.convert.tone_curve = false;
         s.convert.sharpen = 0.0;
         s.preview_open = true;
+        s.thumbs_open = false;
+        s.thumb_panel_width = 310.0;
+        s.thumb_size = 150.0;
         let back = AppSettings::from_json(&s.to_json()).unwrap();
         assert_eq!(back, s);
 

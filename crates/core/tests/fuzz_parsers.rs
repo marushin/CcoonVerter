@@ -179,8 +179,17 @@ fn seeds() -> Vec<Vec<u8>> {
     let jpeg_nested = encode::encode_rgb8(&img, 90, Some(&nested)).unwrap();
     let mut with_xmp = jpeg.clone();
     with_xmp.extend_from_slice(exif::xmp_rating_xml(3).as_bytes());
+    // A sidecar with the structures real ones have.
+    let sidecar_seed = br#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+ xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmp:Rating="3" xmp:Label="Red" crs:Version="16.0">
+<crs:ToneCurvePV2012><rdf:Seq><rdf:li>0, 0</rdf:li></rdf:Seq></crs:ToneCurvePV2012>
+<xmp:Rating>2</xmp:Rating></rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>"#
+        .to_vec();
 
     let mut out = vec![
+        sidecar_seed,
         tiff,
         jpeg.clone(),
         jpeg_nested,
@@ -417,6 +426,15 @@ fn target_own(input: &[u8], info: &ExifInfo) {
     let _ = exif::find_xmp_rating(input);
     let candidates = embedded::find_jpegs(input);
     let _ = embedded::largest_jpeg_in(input);
+    let _ = ccoonverter_core::thumbnail::thumbnail_from_bytes(input, 256);
+    let _ = ccoonverter_core::sidecar::parse_rating(input);
+    for rating in [None, Some(0u8), Some(4)] {
+        if let Some(out) = ccoonverter_core::sidecar::with_rating(input, rating) {
+            // A successful change must read back as what was asked.
+            let wanted = rating.map(i32::from);
+            assert_eq!(ccoonverter_core::sidecar::parse_rating(&out), Ok(wanted));
+        }
+    }
     for c in candidates.iter().take(4) {
         exercise_jpeg(c.bytes(input), info);
     }

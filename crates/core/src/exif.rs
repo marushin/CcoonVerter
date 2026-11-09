@@ -248,6 +248,39 @@ pub fn add_xmp_rating(jpeg: &[u8], rating: u32) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Make the XMP rating of a finished JPEG `rating`: changes an existing XMP
+/// segment in place, adds one when needed, removes only the rating when `None`.
+pub fn set_xmp_rating(jpeg: &[u8], rating: Option<u32>) -> Result<Vec<u8>> {
+    const XMP_HEADER: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+    let mut j = Jpeg::from_bytes(Bytes::copy_from_slice(jpeg))
+        .map_err(|e| ConvertError::Exif(format!("cannot parse JPEG: {e}")))?;
+    let found = j
+        .segments()
+        .iter()
+        .position(|s| s.marker() == markers::APP1 && s.contents().starts_with(XMP_HEADER));
+    let Some(index) = found else {
+        return match rating {
+            Some(r) => add_xmp_rating(jpeg, r),
+            None => Ok(jpeg.to_vec()),
+        };
+    };
+    let contents = j.segments()[index].contents().to_vec();
+    let updated =
+        crate::sidecar::with_rating(&contents[XMP_HEADER.len()..], rating.map(|r| r as u8))
+            .ok_or_else(|| ConvertError::Exif("the XMP packet cannot be changed safely".into()))?;
+    let mut segment = XMP_HEADER.to_vec();
+    segment.extend_from_slice(&updated);
+    if segment.len() > 65_533 {
+        return Err(ConvertError::Exif("the XMP packet is too large".into()));
+    }
+    j.segments_mut()[index] = JpegSegment::new_with_contents(markers::APP1, Bytes::from(segment));
+    let mut out = Vec::with_capacity(jpeg.len() + 64);
+    j.encoder()
+        .write_to(&mut out)
+        .map_err(|e| ConvertError::Exif(e.to_string()))?;
+    Ok(out)
+}
+
 fn ascii(tag: Tag, s: &str) -> Field {
     Field {
         tag,

@@ -769,6 +769,8 @@ pub struct BatchReport {
     pub error: Option<String>,
     /// There is something in the output folder to look at.
     pub can_open: bool,
+    /// Set when a filter narrowed the batch.
+    pub filter_note: Option<String>,
 }
 
 impl BatchReport {
@@ -785,6 +787,7 @@ impl BatchReport {
             issues: Vec::new(),
             error: None,
             can_open: false,
+            filter_note: None,
         };
         match outcome {
             BatchOutcome::Error(e) => report.error = Some(tf(Key::UnexpectedError, &[e])),

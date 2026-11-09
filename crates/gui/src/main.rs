@@ -14,9 +14,11 @@ mod controller;
 mod dialogs;
 mod fonts;
 mod i18n;
+mod marks;
 mod preview;
 mod preview_panel;
 mod theme;
+mod thumbs;
 mod titlebar;
 mod widgets;
 

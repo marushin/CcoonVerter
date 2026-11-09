@@ -12,6 +12,8 @@
 //! - [`render`] the shared chain from linear base to final pixels: exposure,
 //!   highlights, tone curve, adjustments, style, resize, sharpening [new]
 //! - [`preview`] reduced-resolution sources for the GUI preview [new]
+//! - [`sidecar`] star ratings in XMP sidecars, changing nothing else in them [new]
+//! - [`thumbnail`] small upright pictures from the camera JPEG alone [new]
 //! - [`adjust`] RGB multipliers + Levels
 //! - [`style`] 12 picture styles [Pillow `ImageEnhance`/`ImageOps`]
 //! - [`sharpen`] output unsharp mask [new]
@@ -48,9 +50,11 @@ pub mod resize;
 pub mod scan;
 pub mod settings;
 pub mod sharpen;
+pub mod sidecar;
 pub mod style;
 #[doc(hidden)]
 pub mod testutil;
+pub mod thumbnail;
 pub mod update;
 
 /// Working image type: RGB, f32 per channel, sRGB-encoded values in 0..1.

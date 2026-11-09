@@ -109,6 +109,31 @@ strings! {
     BrowseSourceTitle => "Select source folder", "원본 폴더 선택";
     BrowseOutputTitle => "Select output folder", "출력 폴더 선택";
 
+    // Thumbnail panel
+    ThumbsToggle => "Thumbnails", "썸네일";
+    TipThumbsToggle => "Show or hide the thumbnails of the files in this folder.", "폴더 안 파일의 썸네일을 보이거나 숨깁니다.";
+    ThumbsCount => "{0} items", "{0}개 항목";
+    ThumbSizeLabel => "Thumbnail size", "썸네일 크기";
+    TipThumbCamera => "The camera's own JPEG. Adjustments are not applied to thumbnails.", "카메라가 저장한 JPEG입니다. 썸네일에는 조정값이 적용되지 않습니다.";
+    TipThumbDeveloped => "No camera JPEG in this file: the first developed picture, kept as it was. Adjustments are not applied to thumbnails.", "이 파일에는 카메라 JPEG이 없어 처음 현상한 이미지를 그대로 보여 줍니다. 썸네일에는 조정값이 적용되지 않습니다.";
+    TipThumbNoJpeg => "No camera JPEG in this file. Click it to develop a preview.", "이 파일에는 카메라 JPEG이 없습니다. 누르면 미리보기를 현상합니다.";
+
+    // Stars and filter
+    TipStars => "Stars mark the photos you like. Click a star to set it, click the same star again to clear it; keys 1 to 5 set and 0 clears. The filter gathers the photos you starred. Saved in an .xmp file beside the RAW, which Bridge and Lightroom read too.", "별점은 마음에 드는 사진을 표시합니다. 별을 눌러 정하고, 같은 별을 다시 누르면 지웁니다. 숫자 키 1~5로 정하고 0으로 지웁니다. 필터로 별점을 준 사진만 모을 수 있습니다. RAW 옆의 .xmp 파일에 저장되며 Bridge와 Lightroom에서도 읽을 수 있습니다.";
+    StarButton => "{0}: {1} stars", "{0}: 별 {1}개";
+    FilterAll => "All", "전체";
+    FilterRated => "Rated", "별점";
+    TipFilter => "Show only the photos with at least this many stars. While a filter is on, only the photos shown are converted.", "이 별 개수 이상인 사진만 표시합니다. 필터가 켜져 있으면 표시된 사진만 변환합니다.";
+    FilterEmpty => "No photos match this filter", "조건에 맞는 사진이 없습니다";
+    FilterClear => "Show all", "전체 보기";
+    MinStarsLabel => "Minimum stars", "최소 별점";
+    FilterBatchNote => "Filter on: {0} of {1} files", "필터 적용: {1}장 중 {0}장";
+    StartFiltered => "Cook {0} Shown", "{0}장만 구워볼까요!";
+    ResultFilterNote => "Filter was on: only the {0} of {1} files shown were converted.", "필터가 켜져 있어 {1}장 중 표시된 {0}장만 변환했습니다.";
+    MarksReading => "Reading star ratings...", "별점을 읽는 중...";
+    MarksWriteFailed => "Could not save the rating of {0} ({1}). It is kept for this session.", "{0}의 별점을 저장하지 못했습니다({1}). 이번 실행 동안만 유지됩니다.";
+    SidecarUnsafe => "The .xmp file of {0} could not be read safely, so it was left unchanged. The rating is kept for this session only.", "{0}의 .xmp 파일을 안전하게 읽을 수 없어 그대로 두었습니다. 별점은 이번 실행 동안만 유지됩니다.";
+
     // Settings panel
     ModeRaw => "RAW develop", "RAW 현상";
     ModeCamera => "Camera JPEG", "카메라 JPEG";
