@@ -15,6 +15,8 @@
 //! - [`encode`] JPEG encoder
 //! - [`pipeline`] single file conversion [`convert_file`]
 //! - [`job`] parallel batch [`run_conversion`]
+//! - [`update`] GitHub release check [`update_checker.py`]
+//! - [`logging`] log setup [`logger.py`]
 //! - [`error`] error type [`ConversionError`]
 
 pub mod adjust;
@@ -25,6 +27,7 @@ pub mod encode;
 pub mod error;
 pub mod exif;
 pub mod job;
+pub mod logging;
 pub mod paths;
 pub mod pipeline;
 pub mod presets;
@@ -34,6 +37,7 @@ pub mod settings;
 pub mod style;
 #[doc(hidden)]
 pub mod testutil;
+pub mod update;
 
 /// Working image type: RGB, f32 per channel, sRGB-encoded values in 0..1.
 pub type RgbF32Image = image::Rgb32FImage;
