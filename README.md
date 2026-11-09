@@ -18,8 +18,8 @@ v0.9.0부터 Rust로 전면 재작성되어 설치 없이 실행되는 단일 �
 
 | OS | 파일 | 비고 |
 |---|---|---|
-| Windows 10/11 (x64) | `CcooNverter_v0.9.0_windows_x64.exe` | 설치 불필요. 그대로 실행 |
-| macOS 11 이상 (Apple Silicon + Intel) | `CcooNverter_v0.9.0_macos_universal.dmg` | DMG를 열고 `CcooNverter.app`을 Applications로 드래그 |
+| Windows 10/11 (x64) | `CcooNverter_v0.10.0_windows_x64.exe` | 설치 불필요. 그대로 실행 |
+| macOS 11 이상 (Apple Silicon + Intel) | `CcooNverter_v0.10.0_macos_universal.dmg` | DMG를 열고 `CcooNverter.app`을 Applications로 드래그 |
 
 `SHA256SUMS.txt`로 파일 무결성을 확인할 수 있습니다.
 
@@ -35,6 +35,9 @@ v0.9.0부터 Rust로 전면 재작성되어 설치 없이 실행되는 단일 �
 
 ## 주요 기능
 
+- **미리보기 패널**(v0.10.0): 변환 전에 결과를 확인. 넓은 창에서는 설정 옆, 좁은 창에서는 SHOW PREVIEW로 펼침. 슬라이더를 움직이면 바로 다시 그리고, 카메라 임베디드 JPEG과 before/after 비교 가능
+- **드래그 앤 드롭**(v0.10.0): 폴더를 놓으면 원본 폴더로 지정, RAW 파일을 놓으면 그 파일들만 변환 대상으로 선택
+- **현상 품질**(v0.10.0): 기본 필름 톤 커브(끄기 가능), Exposure(EV) -3~+3, 클리핑된 하이라이트 색 깨짐 방지, 약한 출력 샤프닝
 - **12가지 픽처 스타일**: Standard, Portrait, Landscape, Neutral, Vivid, Monochrome, Sepia, Cinematic, HDR, Soft, Dramatic, Black & White
 - **세밀한 톤 컨트롤**: 밝기, RGB 채널 밸런스, Black/White Point(Levels), 화이트 밸런스(카메라 / 자동)
 - **RAW 현상**: Sony, Canon, Nikon, Adobe DNG 주요 포맷 (아래 표)
@@ -81,7 +84,7 @@ v0.9.0에서 새로 생기거나 바뀐 점:
 - **예전 설정 가져오기**: Python 버전(0.8.x) 실행 파일과 **같은 폴더**에 새 실행 파일을 두고 처음 실행하면 `converter_settings.json`과 `presets.json`을 한 번 가져옵니다(새 설정 파일이 아직 없을 때만).
 - **포터블 모드**: 환경 변수 `CCOONVERTER_HOME`을 지정하면 모든 파일을 그 폴더 아래(`config/`, `data/logs/`, `cache/`)에 저장합니다.
   ```powershell
-  $env:CCOONVERTER_HOME = "D:\CcooNverter-portable"; .\CcooNverter_v0.9.0_windows_x64.exe
+  $env:CCOONVERTER_HOME = "D:\CcooNverter-portable"; .\CcooNverter_v0.10.0_windows_x64.exe
   ```
 
 ## 명령줄 도구 (`ccoonverter-cli`)
@@ -90,7 +93,7 @@ GUI와 같은 변환 엔진을 쓰는 명령줄 도구가 있습니다(소스에
 
 ```text
 ccoonverter-cli convert <SOURCE> [-o DIR] [--resize N] [-q Q] [--brightness F] [--wb camera|auto]
-                        [--style NAME] [--rgb R,G,B] [--levels BP,WP] [--embedded] [--exif]
+                        [--ev EV] [--no-tone-curve] [--sharpen F] [--style NAME] [--rgb R,G,B] [--levels BP,WP] [--embedded] [--exif]
                         [--on-conflict skip|overwrite|suffix] [--preset NAME] [-j N] [--json]
 ccoonverter-cli scan <DIR>         # 변환 대상 RAW 파일 목록
 ccoonverter-cli info <RAW_FILE>    # 디코더, 해상도, 임베디드 JPEG, 주요 EXIF
@@ -126,7 +129,7 @@ xcode-select --install                      # 처음 한 번
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust 설치(처음 한 번)
 git clone https://github.com/marushin/CcoonVerter.git && cd CcoonVerter
 bash scripts/build_macos.sh                 # arm64 + x86_64 빌드 → .app → ad-hoc 서명 → DMG
-open dist/macos/CcooNverter_v0.9.0_macos_universal.dmg
+open dist/macos/CcooNverter_v0.10.0_macos_universal.dmg
 ```
 
 확인 항목: `file dist/macos/CcooNverter.app/Contents/MacOS/CcooNverter`가 "universal binary with 2 architectures"로 나오는지, 우클릭 → 열기로 창이 뜨는지, 한글 폴더를 골라 변환이 되는지, 설정이 `~/Library/Application Support/ccoon.CcooNverter/settings.json`에 저장되는지. 전체 체크리스트는 [docs/03_MAC_BUILD_PLAN.md](docs/03_MAC_BUILD_PLAN.md) §7에 있습니다. 창이 뜨지 않거나 그리기가 깨지면 `cargo build --release -p ccoonverter --features wgpu`(Metal)로 다시 빌드해 보세요.
@@ -153,8 +156,8 @@ v0.8.7 이하는 Python(CustomTkinter + rawpy) 앱이었습니다. 예전 실행
 
 **CcooNverter** is a fast batch RAW → JPG converter for Windows and macOS. Pick a folder, press one button, and every RAW file (sub-folders included) becomes a JPG. Version 0.9.0 is a complete rewrite in Rust and ships as a single portable executable (Windows) or a universal app/DMG (macOS).
 
-- **Download**: [Releases](https://github.com/marushin/CcoonVerter/releases/latest) — `CcooNverter_v0.9.0_windows_x64.exe` or `CcooNverter_v0.9.0_macos_universal.dmg`. The macOS app is not notarized: right-click → Open the first time, or run `xattr -dr com.apple.quarantine /Applications/CcooNverter.app`.
-- **Features**: 12 picture styles, brightness / RGB balance / levels / white balance, fast embedded-JPEG extraction (lossless copy when not resizing), resize and quality, EXIF preservation, presets (compatible with the Python version), multi-core batches with progress, ETA and cancel, "open output folder", optional update check.
+- **Download**: [Releases](https://github.com/marushin/CcoonVerter/releases/latest) — `CcooNverter_v0.10.0_windows_x64.exe` or `CcooNverter_v0.10.0_macos_universal.dmg`. The macOS app is not notarized: right-click → Open the first time, or run `xattr -dr com.apple.quarantine /Applications/CcooNverter.app`.
+- **Features**: live preview with before/after against the camera JPEG, folder and file drag and drop, default filmic tone curve, EV exposure control, 12 picture styles, brightness / RGB balance / levels / white balance, fast embedded-JPEG extraction (lossless copy when not resizing), resize and quality, EXIF preservation, presets (compatible with the Python version), multi-core batches with progress, ETA and cancel, "open output folder", optional update check.
 - **Formats**: ARW, CR2, CR3, NEF, DNG (decoded with [rawler](https://github.com/dnglab/dnglab)).
 - **Settings**: OS standard folders (see the table above); legacy Python settings next to the executable are imported once; set `CCOONVERTER_HOME` for a portable setup.
 - **Build**: `cargo build --release -p ccoonverter` (OpenGL/glow renderer; add `--features wgpu` for the wgpu renderer), `scripts/build_windows.ps1`, `scripts/build_macos.sh`. A CLI (`ccoonverter-cli convert|scan|info`) shares the same engine.
