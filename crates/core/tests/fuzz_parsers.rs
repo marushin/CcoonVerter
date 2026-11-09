@@ -11,8 +11,8 @@
 //! justifies, or one that runs too long, on our own code paths. Set
 //! `CCOON_FUZZ_RAWLER=1` to also exercise rawler's parsers: their panics are
 //! reported separately, but rawler can still ask for an impossible allocation
-//! on some damaged files, which aborts the whole process (see
-//! `docs/V0.12_REPORT.md`), so that target is off by default.
+//! on some damaged files, which aborts the whole process, so that target is
+//! off by default.
 //!
 //! Long run (release build, all cores):
 //! `CCOON_FUZZ_SECS=600 cargo test --release -p ccoonverter-core --test fuzz_parsers

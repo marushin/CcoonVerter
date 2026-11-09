@@ -106,7 +106,7 @@ fn cores() -> usize {
 }
 
 /// Peak memory per pixel while developing: measured 29 to 31 bytes on files
-/// of 8 to 28 MP (`docs/V0.12_REPORT.md`). The peak is during demosaicing,
+/// of 8 to 28 MP. The peak is during demosaicing,
 /// so the output format does not change it.
 pub const DEVELOP_BYTES_PER_PIXEL: u64 = 32;
 /// Peak unrelated to the image size (metering preview, decoder state).

@@ -139,7 +139,7 @@ pub fn highlight_pixel(gained: [f32; 3], base_max: f32) -> [f32; 3] {
 // mid-tones a little (auto exposure maps the top 1 % to white and tends to
 // run brighter than camera JPEGs); TONE_CONTRAST blends toward a smoothstep
 // (toe + shoulder). Chosen by comparing the five sample files against their
-// embedded JPEGs, measurements in docs/V0.10_REPORT.md.
+// embedded JPEGs.
 const TONE_GAMMA: f32 = 1.12;
 const TONE_CONTRAST: f32 = 0.45;
 

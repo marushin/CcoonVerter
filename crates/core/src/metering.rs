@@ -18,7 +18,7 @@
 //!    `log2 gain = 0.36 log2(1/white) + 0.43 log2(0.18/key) + 0.16`. `white`
 //!    is the old 1 % clip point, `key` the geometric mean luminance (scene
 //!    key). The weights were fitted against camera JPEGs on the tuning files
-//!    of the regression matrix (see `docs/V0.11_REPORT.md`). It fixes the
+//!    of the regression matrix. It fixes the
 //!    failure of the pure 1 % clip, which pushed low-key frames up and left
 //!    high-key frames short.
 //!

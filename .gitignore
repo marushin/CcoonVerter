@@ -7,7 +7,9 @@ Thumbs.db
 tests/samples/
 tests/regression/cache/
 
-# Internal plans and reports stay local
+# Internal notes stay local
+/CLAUDE.md
+/.claude/
 /docs/0*_*.md
 /docs/PHASE*_REPORT.md
 /docs/V*_REPORT.md

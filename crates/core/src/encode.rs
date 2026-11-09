@@ -11,7 +11,7 @@
 //! `colours_survive_roundtrip` test), so they stay disabled until verified
 //! against a second decoder.
 //!
-//! What each format keeps (see `docs/V0.12_REPORT.md`):
+//! What each format keeps:
 //!
 //! | Format | ICC   | EXIF                | Rating                 |
 //! |--------|-------|---------------------|------------------------|

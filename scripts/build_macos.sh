@@ -6,7 +6,6 @@
 # Prerequisites: xcode-select --install, rustup (https://rustup.rs).
 # Output: dist/macos/CcooNverter.app, dist/macos/CcooNverter_v<ver>_macos_universal.dmg
 #         and dist/macos/SHA256SUMS.txt
-# See docs/03_MAC_BUILD_PLAN.md.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
