@@ -28,8 +28,12 @@ pub const PRESETS_FILE: &str = "presets.json";
 pub const LOG_FILE: &str = "ccoonverter.log";
 pub const UPDATE_CACHE_FILE: &str = "update_check.json";
 
-/// Supported RAW extensions (upper case, without dot). Same five as Python v0.8.7.
-pub const SUPPORTED_EXTENSIONS: [&str; 5] = ["ARW", "CR2", "CR3", "DNG", "NEF"];
+/// Supported RAW extensions (upper case, without dot): the five of Python
+/// v0.8.7 plus the formats added in v0.11.0 after decoding real files
+/// (`tests/regression/manifest.json`).
+pub const SUPPORTED_EXTENSIONS: [&str; 10] = [
+    "ARW", "CR2", "CR3", "DNG", "NEF", "RAF", "ORF", "RW2", "PEF", "SRW",
+];
 
 // JPEG quality
 pub const DEFAULT_JPG_QUALITY: u8 = 90;
@@ -101,8 +105,13 @@ mod tests {
         assert!(is_supported_extension("arw"));
         assert!(is_supported_extension(".Cr3"));
         assert!(is_supported_extension("NEF"));
+        assert!(is_supported_extension("RAF"));
+        assert!(is_supported_extension(".orf"));
+        assert!(is_supported_extension("Rw2"));
+        assert!(is_supported_extension("pef"));
+        assert!(is_supported_extension("SRW"));
         assert!(!is_supported_extension("jpg"));
-        assert!(!is_supported_extension("RAF"));
+        assert!(!is_supported_extension("X3F"));
     }
 
     #[test]

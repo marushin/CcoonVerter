@@ -78,6 +78,11 @@ mod tests {
             "한글 폴더/사진.CR2",
             "x.jpg",
             "y.RAF",
+            "one.orf",
+            "two.Rw2",
+            "three.PEF",
+            "four.srw",
+            "skip.X3F",
             "noext",
         ] {
             fs::write(root.join(f), b"x").unwrap();
@@ -98,6 +103,11 @@ mod tests {
                 "a.cr3",
                 "b/d.dng",
                 "b/sub/c.Nef",
+                "four.srw",
+                "one.orf",
+                "three.PEF",
+                "two.Rw2",
+                "y.RAF",
                 "z.ARW",
                 "한글 폴더/사진.CR2"
             ]
